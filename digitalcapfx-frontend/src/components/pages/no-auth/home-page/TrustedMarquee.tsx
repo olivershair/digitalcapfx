@@ -1,0 +1,61 @@
+'use client'
+
+import React from 'react'
+import { useLanguageStore } from '@/store/languageStore'
+
+const CAPABILITIES = [
+    'Collections & Payouts (Encaissements & Décaissements)',
+    'Payez vos Fournisseurs : Euro, USD et Naira',
+    'Paiements Transfrontaliers',
+    'Change Multi-Devises en Temps Réel',
+    'Comptes Trésorerie Entreprise',
+    'Infrastructure & API de Paiement',
+    'Vérification KYC / KYB Instantanée',
+    'Suivi & Justificatifs en Temps Réel',
+    'Conformité Réglementaire Internationale',
+];
+
+const TrustedMarquee = () => {
+    const { t } = useLanguageStore();
+    // Duplicate items to fill screen and scroll continuously
+    const doubleItems = [...CAPABILITIES, ...CAPABILITIES, ...CAPABILITIES];
+
+    return (
+        <div className="w-full bg-[#0C1224] py-12 border-b border-white/5 relative overflow-hidden select-none">
+            {/* Centered Heading — Change #6: Generic, truthful heading */}
+            <div className="text-center text-[11px] font-bold tracking-[0.25em] text-[#3E4658] uppercase mb-8 select-none">
+                {t('trusted.title', { defaultValue: 'Nos Capacités' })}
+            </div>
+
+            {/* Left and Right Fade overlays */}
+            <div className="absolute left-0 top-16 bottom-0 w-16 sm:w-32 bg-gradient-to-r from-[#050816] to-transparent z-10 pointer-events-none"></div>
+            <div className="absolute right-0 top-16 bottom-0 w-16 sm:w-32 bg-gradient-to-l from-[#050816] to-transparent z-10 pointer-events-none"></div>
+
+            <div className="flex whitespace-nowrap min-w-full">
+                <div className="flex space-x-16 animate-marquee-slow shrink-0 hover:[animation-play-state:paused] cursor-pointer">
+                    {doubleItems.map((item, idx) => (
+                        <div
+                            key={`${item}-${idx}`}
+                            className="text-sm font-bold tracking-tight text-[#3E4658] hover:text-slate-400 transition duration-300 select-none"
+                        >
+                            {item}
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Injected slower marquee custom keyframes */}
+            <style jsx global>{`
+                @keyframes marquee-slow {
+                    0% { transform: translateX(0); }
+                    100% { transform: translateX(-33.33%); }
+                }
+                .animate-marquee-slow {
+                    animation: marquee-slow 40s linear infinite;
+                }
+            `}</style>
+        </div>
+    )
+}
+
+export default TrustedMarquee

@@ -1,0 +1,175 @@
+'use client'
+
+import React from 'react'
+import { ArrowDownLeft, Send, RefreshCw, CheckCircle, XCircle } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { transferService } from '@/services/transfer.service'
+import { extractActivityGroupsAndItems } from '@/services/activity.service'
+import { cn, formatCurrencyByLocale } from '@/lib/utils'
+import { useLanguageStore } from '@/store/languageStore'
+import { FEATURE_FLAGS, isCryptoActivity } from '@/config/featureFlags'
+
+const formatBalance = (amount: string | number, currency: string) => {
+    return formatCurrencyByLocale(amount, currency);
+};
+
+const getTokenStyles = (token?: string, walletCode?: string) => {
+    const sym = (token || walletCode || '').toUpperCase();
+    if (sym === 'USDC') {
+        return {
+            sym: 'USDC',
+            badgeBg: 'bg-blue-500/10 border-blue-500/20 text-blue-400',
+        };
+    }
+    if (sym === 'USDT') {
+        return {
+            sym: 'USDT',
+            badgeBg: 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
+        };
+    }
+    if (sym === 'IUSD') {
+        return {
+            sym: 'iUSD',
+            badgeBg: 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400',
+        };
+    }
+    if (sym === 'BUSD') {
+        return {
+            sym: 'BUSD',
+            badgeBg: 'bg-amber-500/10 border-amber-500/20 text-amber-400',
+        };
+    }
+    return {
+        sym: sym || 'STABLECOIN',
+        badgeBg: 'bg-slate-500/10 border-slate-500/20 text-slate-400',
+    };
+};
+
+const RecentActivity: React.FC = () => {
+    const { t } = useLanguageStore();
+    const activityQuery = useQuery({
+        queryKey: ['activity'],
+        queryFn: () => transferService.getActivity(),
+    });
+
+    const { items } = extractActivityGroupsAndItems(activityQuery.data?.data);
+    const txList = FEATURE_FLAGS.ALLOW_CRYPTO ? items : items.filter((item) => !isCryptoActivity(item));
+
+    return (
+        <div className="bg-[#0C1224] border border-[#131B30] rounded-3xl p-6 text-left shadow-xl space-y-6">
+            
+            {/* Header split */}
+            <div className="flex justify-between items-center select-none">
+                <h3 className="font-satoshi font-bold text-base text-white">{t('section.recent')}</h3>
+                <button 
+                    onClick={() => activityQuery.refetch()}
+                    className="text-xs font-semibold text-primary-400 hover:text-primary-350 hover:underline flex items-center space-x-1"
+                >
+                    <RefreshCw className={cn("h-3.5 w-3.5", activityQuery.isFetching && "animate-spin")} />
+                    <span>{t('action.refresh')}</span>
+                </button>
+            </div>
+
+            {/* List or Loading or Empty State */}
+            {activityQuery.isLoading ? (
+                <div className="py-12 flex flex-col items-center justify-center space-y-2 select-none">
+                    <div className="w-8 h-8 border-4 border-t-primary-500 border-white/10 rounded-full animate-spin"></div>
+                    <p className="text-[11px] text-slate-550 font-sans">{t('activity.loading')}</p>
+                </div>
+            ) : txList.length > 0 ? (
+                <div className="space-y-3.5 min-h-[220px] max-h-[480px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                    {txList.slice(0, 5).map((tx) => {
+                        const tokenSym = tx.asset || tx.currency || (tx as any).token || '';
+                        const tokenStyle = getTokenStyles(tokenSym);
+                        const isIncoming = tx.amount_sign === '+' ||
+                                           (tx.icon_type && tx.icon_type.startsWith('received')) ||
+                                           tx.type?.toLowerCase().includes('deposit') || 
+                                           tx.type?.toLowerCase().includes('receive') || 
+                                           tx.type?.toLowerCase().includes('fund') ||
+                                           (tx.type?.toLowerCase() === 'exchange' && parseFloat(tx.amount || '0') > 0);
+                        
+                        let amtFormatted = tx.amount_formatted;
+                        if (!amtFormatted && tx.amount) {
+                            const valNum = Math.abs(parseFloat(tx.amount));
+                            amtFormatted = (isIncoming ? '+' : '-') + formatBalance(valNum, tokenSym);
+                        }
+
+                        const dateStr = tx.created_at || tx.createdAt 
+                            ? new Date(tx.created_at || tx.createdAt || '').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                            : '';
+
+                        return (
+                            <div key={tx.id} className="flex items-center justify-between py-1 border-b border-white/[0.03] last:border-b-0">
+                                <div className="flex items-center space-x-3.5 min-w-0">
+                                    <div className={cn(
+                                        "w-9 h-9 rounded-full flex items-center justify-center shrink-0 border",
+                                        isIncoming 
+                                            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
+                                            : "bg-rose-500/10 border-rose-500/20 text-rose-400"
+                                    )}>
+                                        {isIncoming ? <ArrowDownLeft className="h-4.5 w-4.5" /> : <Send className="h-3.5 w-3.5" />}
+                                    </div>
+                                    <div className="text-left min-w-0">
+                                        <div className="flex items-center space-x-2">
+                                            <h4 className="font-sans font-bold text-xs text-white truncate">
+                                                {tx.title || tx.description || `${tx.type} transaction`}
+                                            </h4>
+                                            {tokenStyle.sym && (
+                                                <span className={cn(
+                                                    "px-1.5 py-0.25 rounded text-[9px] font-black tracking-wider uppercase border shrink-0 select-none font-mono",
+                                                    tokenStyle.badgeBg
+                                                )}>
+                                                    {tokenStyle.sym}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <span className="text-[10px] text-slate-500 font-medium block mt-0.5 select-none truncate">
+                                            {tx.subtitle || `${tx.type}${dateStr ? ' • ' + dateStr : ''}`}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="text-right select-none flex items-center space-x-3">
+                                    <div className="text-right">
+                                        {amtFormatted && (
+                                            <div className={cn(
+                                                "font-mono text-xs font-extrabold",
+                                                isIncoming ? "text-emerald-400" : "text-white"
+                                            )}>
+                                                {amtFormatted}
+                                            </div>
+                                        )}
+                                        <span className={cn(
+                                            "text-[9px] font-bold block mt-0.5 uppercase tracking-wider",
+                                            tx.status === 'completed' ? "text-emerald-500" : "text-rose-500"
+                                        )}>
+                                            {tx.status}
+                                        </span>
+                                    </div>
+                                    {tx.status === 'completed' ? (
+                                        <CheckCircle className="h-4 w-4 text-emerald-500/80 shrink-0" />
+                                    ) : (
+                                        <XCircle className="h-4 w-4 text-rose-500/80 shrink-0" />
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : (
+                <div className="py-12 border border-dashed border-white/5 rounded-2xl flex flex-col items-center justify-center space-y-3 select-none">
+                    <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-slate-500">
+                        <RefreshCw className="h-5 w-5 opacity-40" />
+                    </div>
+                    <div className="text-center space-y-0.5">
+                        <h4 className="text-xs font-bold text-white font-satoshi">{t('activity.empty.title')}</h4>
+                        <p className="text-[11px] text-slate-550 font-sans">{t('activity.empty.subtitle')}</p>
+                    </div>
+                </div>
+            )}
+
+        </div>
+    );
+};
+
+export default RecentActivity;

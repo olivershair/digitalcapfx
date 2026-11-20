@@ -1,0 +1,44 @@
+# Binaries
+bin/
+*.exe
+*.out
+
+# Environment
+.env*
+!.env.example
+*.local.env
+
+# Private keys, certificates, and provider credentials.
+*.pem
+*.key
+*.p12
+*.pfx
+*service-account*.json
+*service_account*.json
+*credentials*.json
+
+# Go
+vendor/
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+*.log
+
+# SQLC generated (committed, but listed for clarity)
+# internal/db/sqlc/ is committed
+
+# local dev scratch scripts (never commit — may contain secrets)
+/scratch/
+/test_sms.go
+/test_nilos.go
+/test_nilos_endpoints.go
+/find_missing_swag.go
+caas_doc.json

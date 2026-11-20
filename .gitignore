@@ -1,0 +1,34 @@
+# Environment files can contain credentials.
+.env*
+!.env.example
+
+# Dependencies and generated build output.
+node_modules/
+.next/
+dist/
+build/
+
+# Private keys and certificates.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Cloud/provider credentials.
+*service-account*.json
+*service_account*.json
+*credentials*.json
+
+# Local environment and package-manager credentials.
+**/.env*
+!**/.env.example
+.npmrc
+!.npmrc.example
+
+# Local secrets and state.
+**/secrets/
+**/credentials/
+*.jks
+*.keystore
+*.tfstate
+*.tfstate.*

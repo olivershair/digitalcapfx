@@ -1,0 +1,414 @@
+'use client'
+
+import React, { useState, useEffect, useRef } from 'react'
+import { ChevronDown, Check } from 'lucide-react'
+import { useTransactionStore } from '@/store/transactionStore'
+import { CurrencyIcon } from '@/components/ui/CurrencyIcon'
+import { Sheet } from '@/components/ui/Sheet'
+import { cn, formatCurrencyByLocale } from '@/lib/utils'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { accountService, extractCryptoTokenList } from '@/services/account.service'
+import { transferService } from '@/services/transfer.service'
+import { toast } from 'sonner'
+import { useLanguageStore } from '@/store/languageStore'
+import { FEATURE_FLAGS } from '@/config/featureFlags'
+import { momoService } from '@/services/momo.service'
+
+// Import subcomponents
+import { ReceiveDetailsView } from './receive/ReceiveDetailsView'
+import { ReceiveMomoView } from './receive/ReceiveMomoView'
+
+export interface Wallet {
+    id: string;
+    name: string;
+    code: string;
+    type: 'fiat' | 'stablecoin';
+    balance: string;
+    rawBalance: number;
+    accountNumber?: string;
+    walletAddress?: string;
+    iban?: string | null;
+    bic?: string | null;
+    sortCode?: string | null;
+    accountNumberUk?: string | null;
+    provider?: 'caas' | 'waas';
+}
+
+const CURRENCY_NAMES: Record<string, string> = {
+    USD: 'US Dollar',
+    EUR: 'Euro',
+    GBP: 'British Pound',
+    NGN: 'Nigerian Naira',
+    XOF: 'CFA Franc BCEAO',
+    XAF: 'CFA Franc BEAC',
+    USDC: 'USD Coin',
+    IUSD: 'Instant USD',
+};
+
+const formatBalance = (amount: string | number, currency: string) => {
+    return formatCurrencyByLocale(amount, currency);
+};
+
+export const ReceiveMoneySheet: React.FC = () => {
+    const { t } = useLanguageStore();
+    const queryClient = useQueryClient();
+    const { isReceiveOpen, closeReceive, receiveDefaultWalletId } = useTransactionStore();
+
+    const [selectedWalletId, setSelectedWalletId] = useState<string>('usdc');
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<'details' | 'momo'>('details');
+
+    // Mobile Money form states
+    const [operator, setOperator] = useState('MTN');
+    const [phone, setPhone] = useState('');
+    const [depositAmount, setDepositAmount] = useState('');
+    const [depositSuccess, setDepositSuccess] = useState(false);
+    const [fundingCurrency, setFundingCurrency] = useState<'XOF' | 'XAF'>('XOF');
+
+    const dropdownRef = useRef<HTMLDivElement>(null);
+
+    // Close select currency dropdown if clicked anywhere else
+    useEffect(() => {
+        const handleOutsideClick = (e: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+                setIsDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleOutsideClick);
+        return () => document.removeEventListener('mousedown', handleOutsideClick);
+    }, []);
+
+    // Fetch wallets/balances & pre-fetch MoMo accounts
+    const momoAccountsQuery = useQuery({
+        queryKey: ['momoAccounts'],
+        queryFn: () => momoService.getMomoAccounts(),
+        staleTime: 1000 * 60 * 15,
+    });
+
+    const fiatQuery = useQuery({
+        queryKey: ['accounts'],
+        queryFn: () => accountService.getAccounts(),
+        enabled: isReceiveOpen,
+    });
+
+    const cryptoQuery = useQuery({
+        queryKey: ['cryptoBalances'],
+        queryFn: () => accountService.getCryptoBalances(),
+        enabled: isReceiveOpen && FEATURE_FLAGS.ALLOW_CRYPTO,
+    });
+
+    const cryptoWalletQuery = useQuery({
+        queryKey: ['cryptoWallet'],
+        queryFn: () => accountService.getCryptoWallet(),
+        enabled: isReceiveOpen && FEATURE_FLAGS.ALLOW_CRYPTO,
+    });
+
+    const waasWalletsQuery = useQuery({
+        queryKey: ['waasWallets'],
+        queryFn: () => accountService.getWaaSWallets(),
+        enabled: isReceiveOpen && FEATURE_FLAGS.ALLOW_CRYPTO,
+    });
+
+    const walletsList: Wallet[] = [];
+
+    // Map stablecoin wallet(s) (CaaS - USDC/USDT)
+    if (FEATURE_FLAGS.ALLOW_CRYPTO && cryptoQuery.data?.success && cryptoQuery.data.data) {
+        const cryptoList = extractCryptoTokenList(cryptoQuery.data.data);
+        const caasWalletData = cryptoWalletQuery.data?.data;
+
+        cryptoList.forEach((d: any) => {
+            const rawBal = d.balance_raw || d.balanceRaw || d.balance_usdc || d.balanceUsdc || (d.balance !== undefined ? String(d.balance) : '0');
+            const balNum = typeof d.balance === 'number' ? d.balance : parseFloat(rawBal || '0');
+            const symbol = (d.symbol || 'USDC').toUpperCase();
+            const displaySymbol = symbol === 'IUSD' ? 'iUSD' : symbol;
+            const caasAddress = caasWalletData?.abstraction_address || caasWalletData?.abstractionAddress || caasWalletData?.walletAddress || d.wallet_address || d.walletAddress;
+
+            walletsList.push({
+                id: displaySymbol.toLowerCase(),
+                name: d.name || CURRENCY_NAMES[displaySymbol] || `${displaySymbol} Wallet`,
+                code: displaySymbol,
+                type: 'stablecoin',
+                balance: d.balance_formatted || d.balanceFormatted || formatCurrencyByLocale(rawBal, displaySymbol),
+                rawBalance: balNum,
+                walletAddress: caasAddress,
+                provider: 'caas'
+            });
+        });
+    }
+
+    // Map fiat wallets (display active fiats)
+    if (fiatQuery.data?.success && Array.isArray(fiatQuery.data.data)) {
+        fiatQuery.data.data
+            .filter((acc) => !acc.status || acc.status.toLowerCase() === 'active')
+            .forEach((acc) => {
+                walletsList.push({
+                    id: acc.id || acc.currency.toLowerCase(),
+                    name: CURRENCY_NAMES[acc.currency] || acc.currency,
+                    code: acc.currency,
+                    type: 'fiat',
+                    balance: formatCurrencyByLocale(acc.balance, acc.currency),
+                    rawBalance: parseFloat(acc.balance || '0'),
+                    accountNumber: acc.accountNumber || (acc as any).account_number,
+                    iban: acc.iban || null,
+                    bic: acc.bic || null,
+                    sortCode: acc.sortCode || null,
+                    accountNumberUk: acc.accountNumberUk || null,
+                });
+            });
+    }
+
+    // Map WaaS wallets if ALLOW_CRYPTO is true
+    if (FEATURE_FLAGS.ALLOW_CRYPTO) {
+        const waasAddressesData = waasWalletsQuery.data?.data?.addresses || waasWalletsQuery.data?.data || [];
+        if (Array.isArray(waasAddressesData)) {
+            waasAddressesData.forEach((w: any) => {
+                const balancesArr = Array.isArray(w.balances) ? w.balances : [];
+
+                // 1. Map the native asset of the network
+                const nativeSymbol = w.network || 'POL';
+                const nativeBalObj = balancesArr.find((b: any) => b.symbol?.toUpperCase() === nativeSymbol.toUpperCase() || b.currency?.toUpperCase() === nativeSymbol.toUpperCase());
+                const nativeBalVal = nativeBalObj?.balance !== undefined ? parseFloat(nativeBalObj.balance.toString()) : 0;
+                const nativeFormattedBal = nativeBalObj?.formatted_balance ||
+                    nativeBalObj?.formattedBalance ||
+                    formatBalance(nativeBalVal, nativeSymbol);
+
+                walletsList.push({
+                    id: nativeSymbol.toLowerCase(),
+                    name: `${w.network} Wallet`,
+                    code: nativeSymbol,
+                    type: 'stablecoin',
+                    balance: nativeFormattedBal,
+                    rawBalance: nativeBalVal,
+                    walletAddress: w.address,
+                    provider: 'waas'
+                });
+
+                // 2. Map other stablecoins/tokens in balances list (e.g., USDC, USDT)
+                balancesArr.forEach((b: any) => {
+                    const sym = b.symbol || b.currency || '';
+                    if (!sym || sym.toUpperCase() === nativeSymbol.toUpperCase()) return;
+
+                    const balVal = b.balance !== undefined ? parseFloat(b.balance.toString()) : 0;
+                    const formattedBal = b.formatted_balance ||
+                        b.formattedBalance ||
+                        formatBalance(balVal, sym);
+
+                    walletsList.push({
+                        id: sym.toLowerCase(),
+                        name: `${sym} Wallet`,
+                        code: sym,
+                        type: 'stablecoin',
+                        balance: formattedBal,
+                        rawBalance: balVal,
+                        walletAddress: w.address,
+                        provider: 'waas'
+                    });
+                });
+            });
+        }
+    }
+
+    // Pre-select wallet if default is provided
+    useEffect(() => {
+        if (isReceiveOpen && walletsList.length > 0) {
+            const matchesDefault = walletsList.find(w => w.id === receiveDefaultWalletId);
+            setSelectedWalletId(matchesDefault ? matchesDefault.id : walletsList[0].id);
+            setDepositSuccess(false);
+            setDepositAmount('');
+            setPhone('');
+            setActiveTab('details');
+        }
+    }, [isReceiveOpen, receiveDefaultWalletId, walletsList.length]);
+
+    const activeWallet = walletsList.find(w => w.id === selectedWalletId) || walletsList[0] || {
+        id: 'no-wallet',
+        name: 'No wallet available',
+        code: '',
+        type: 'fiat' as const,
+        balance: '0.00',
+        rawBalance: 0,
+    };
+
+    const isCrypto = activeWallet.type === 'stablecoin';
+    const isMomoAvailable = (isCrypto && activeWallet.provider !== 'waas') || activeWallet.code === 'XOF' || activeWallet.code === 'XAF';
+
+    // Build the dynamic address/copy label
+    const address = isCrypto
+        ? (activeWallet.walletAddress || t('receive.addressNotAvailable'))
+        : `${t('receive.details.bank')}: ${activeWallet.name}\n${t('receive.details.account')}: ${activeWallet.accountNumber || ''}\n${t('receive.details.iban')}: ${activeWallet.iban || ''}`;
+
+    const handleShare = async () => {
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: `DigitalCapFx Deposit Details (${activeWallet.code})`,
+                    text: address,
+                });
+                toast.success(t('receive.toast.shared'));
+            } catch (err) {
+                console.error('Error sharing:', err);
+            }
+        } else {
+            // Fallback copy details
+            navigator.clipboard.writeText(address);
+            toast.success(t('receive.toast.copied'));
+        }
+    };
+
+    // Deposit API mutation
+    const fundMutation = useMutation({
+        mutationFn: (payload: { amount: number; currency: 'XOF' | 'XAF'; operator: string; phone: string; token?: 'USDC' | 'USDT' }) =>
+            transferService.initiateDeposit({
+                ...payload,
+                isStablecoin: isCrypto
+            }),
+        onSuccess: (res) => {
+            if (res?.success) {
+                setDepositSuccess(true);
+                toast.success(t('receive.toast.depositInitiated'));
+                queryClient.invalidateQueries({ queryKey: ['accounts'] });
+                queryClient.invalidateQueries({ queryKey: ['cryptoBalances'] });
+                queryClient.invalidateQueries({ queryKey: ['activity'] });
+            } else {
+                toast.error(res?.error?.message || t('receive.toast.failed'));
+            }
+        },
+        onError: (err: any) => {
+            toast.error(err.response?.data?.error?.message || t('receive.toast.failedRetry'));
+        }
+    });
+
+    const handleInitiateDeposit = (e: React.FormEvent) => {
+        e.preventDefault();
+        const amt = parseFloat(depositAmount);
+        if (isNaN(amt) || amt <= 0) {
+            toast.error(t('receive.toast.invalidAmount'));
+            return;
+        }
+        if (!phone) {
+            toast.error(t('receive.toast.invalidPhone'));
+            return;
+        }
+
+        const currency = isCrypto ? fundingCurrency : (activeWallet.code as 'XOF' | 'XAF');
+        fundMutation.mutate({
+            amount: amt,
+            currency,
+            operator,
+            phone,
+            token: activeWallet.code === 'USDT' ? 'USDT' : 'USDC'
+        });
+    };
+
+    return (
+        <Sheet
+            isOpen={isReceiveOpen}
+            onClose={closeReceive}
+            title={t('receive.sheet.title')}
+            description={t('receive.sheet.desc')}
+        >
+            <div className="space-y-6 flex flex-col justify-between h-full text-center">
+                <div className="space-y-5">
+                    {/* Wallet selector dropdown */}
+                    <div className="space-y-2">
+                        <span className="text-[10px] font-bold text-slate-555 uppercase tracking-wider block text-left select-none">{t('receive.form.selectWallet')}</span>
+                        <div className="relative" ref={dropdownRef}>
+                            <div
+                                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                                className="bg-[#0C1224] border border-white/10 hover:border-white/15 rounded-2xl p-4 flex items-center justify-between cursor-pointer transition select-none"
+                            >
+                                <div className="flex items-center space-x-3">
+                                    <CurrencyIcon code={activeWallet.code} size="md" />
+                                    <div className="text-left">
+                                        <span className="font-bold text-white block text-sm leading-tight">{activeWallet.name}</span>
+                                        <span className="text-[9px] text-slate-500 font-bold block mt-0.5">{activeWallet.code} • Balance: {activeWallet.balance}</span>
+                                    </div>
+                                </div>
+                                <ChevronDown className="h-4 w-4 text-slate-500" />
+                            </div>
+
+                            {isDropdownOpen && (
+                                <div className="absolute top-full left-0 right-0 mt-2 bg-[#0E1528] border border-white/10 rounded-2xl shadow-2xl z-30 max-h-[220px] overflow-y-auto scrollbar-none py-1.5 animate-in fade-in slide-in-from-top-1 duration-200">
+                                    {walletsList.map((w) => (
+                                        <div
+                                            key={w.id}
+                                            onClick={() => {
+                                                setSelectedWalletId(w.id);
+                                                setDepositSuccess(false);
+                                                setDepositAmount('');
+                                                setPhone('');
+                                                setActiveTab('details');
+                                                setIsDropdownOpen(false);
+                                            }}
+                                            className={cn(
+                                                "px-4 py-2.5 flex items-center justify-between cursor-pointer hover:bg-white/[0.03] transition",
+                                                selectedWalletId === w.id ? "bg-white/[0.01]" : ""
+                                            )}
+                                        >
+                                            <div className="flex items-center space-x-3">
+                                                <CurrencyIcon code={w.code} size="md" />
+                                                <div className="text-left">
+                                                    <span className="font-bold text-white text-xs block leading-tight">{w.name}</span>
+                                                    <span className="text-[9px] text-slate-500 font-bold">{w.code} • {w.balance}</span>
+                                                </div>
+                                            </div>
+                                            {selectedWalletId === w.id && <Check className="h-4 w-4 text-primary-400" />}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {isMomoAvailable && (
+                        /* Tab selector for MoMo vs bank details */
+                        <div className="flex bg-black/30 border border-white/15 p-1 rounded-xl">
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('details')}
+                                className={cn(
+                                    "flex-1 py-2 text-[11px] font-bold rounded-lg transition duration-200 cursor-pointer select-none",
+                                    activeTab === 'details'
+                                        ? "bg-primary-500 text-white shadow-md"
+                                        : "text-slate-400 hover:text-white"
+                                )}
+                            >
+                                {t('receive.tab.details')}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('momo')}
+                                className={cn(
+                                    "flex-1 py-2 text-[11px] font-bold rounded-lg transition duration-200 cursor-pointer select-none",
+                                    activeTab === 'momo'
+                                        ? "bg-primary-500 text-white shadow-md"
+                                        : "text-slate-400 hover:text-white"
+                                )}
+                            >
+                                {t('receive.tab.momo')}
+                            </button>
+                        </div>
+                    )}
+
+                    {activeTab === 'details' ? (
+                        <ReceiveDetailsView
+                            activeWallet={activeWallet}
+                            isCrypto={isCrypto}
+                            address={address}
+                            handleShare={handleShare}
+                        />
+                    ) : (
+                        <ReceiveMomoView
+                            activeWallet={activeWallet}
+                            isCrypto={isCrypto}
+                            fundingCurrency={fundingCurrency}
+                            setFundingCurrency={setFundingCurrency}
+                        />
+                    )}
+                </div>
+            </div>
+        </Sheet>
+    );
+};
+
+export default ReceiveMoneySheet;

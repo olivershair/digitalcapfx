@@ -1,0 +1,641 @@
+'use client'
+
+import React, { useState, useEffect } from 'react'
+import Link from 'next/link'
+import { usePathname, useRouter } from 'next/navigation'
+import { Logo } from '@/components/ui/Logo'
+import {
+    LayoutDashboard,
+    Wallet,
+    CreditCard,
+    RefreshCw,
+    Settings,
+    HelpCircle,
+    // Bell,
+    LogOut,
+    ShieldAlert,
+    ShieldAlert as ShieldWarning,
+    RefreshCw as SpinnerIcon,
+    Clock,
+    Gift,
+    Menu,
+    X,
+    Users,
+    Smartphone,
+    Lock
+} from 'lucide-react'
+import { cn } from '@/lib/utils'
+import SendMoneySheet from '@/components/pages/auth/_components/SendMoneySheet'
+import ReceiveMoneySheet from '@/components/pages/auth/_components/ReceiveMoneySheet'
+import FundCardSheet from '@/components/pages/auth/cards/FundCardSheet'
+import NewCardSheet from '@/components/pages/auth/cards/NewCardSheet'
+import PhoneSendSheet from '@/components/pages/auth/_components/PhoneSendSheet'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { profileService } from '@/services/profile.service'
+import { authService } from '@/services/auth.service'
+import { accountService } from '@/services/account.service'
+import { toast } from 'sonner'
+import { useLanguageStore, Language } from '@/store/languageStore'
+import LanguageSelector from '@/components/ui/LanguageSelector'
+import { Select } from '@/components/ui/Select'
+import { FEATURE_FLAGS } from '@/config/featureFlags'
+import '@/lib/i18n'
+
+const SIDEBAR_LINKS = [
+    { label: 'Overview', icon: LayoutDashboard, href: '/dashboard' },
+    { label: 'Wallets', icon: Wallet, href: '/wallets' },
+    { label: 'Cards', icon: CreditCard, href: '/cards' },
+    { label: 'Exchange', icon: RefreshCw, href: '/exchange' },
+    // { label: 'Airtime & Bills', icon: Smartphone, href: '/vtu' },
+    { label: 'Activity', icon: Clock, href: '/activity' },
+    { label: 'Referrals', icon: Gift, href: '/referrals' },
+    { label: 'Support Desk', icon: HelpCircle, href: '/support' },
+];
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+    const pathname = usePathname();
+    const router = useRouter();
+    const queryClient = useQueryClient();
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+    const { t, language, setLanguage } = useLanguageStore();
+
+    // Verification blocker states
+    const [otpCode, setOtpCode] = useState('');
+    const [timer, setTimer] = useState(30);
+
+    const [accountType, setAccountType] = useState<'individual' | 'business' | null>(null);
+
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            const stored = localStorage.getItem('account_type') as 'individual' | 'business' | null;
+            setAccountType(stored);
+        }
+    }, []);
+
+    // Profile Query
+    const profileQuery = useQuery({
+        queryKey: ['profile'],
+        queryFn: () => profileService.getProfile(),
+        refetchOnWindowFocus: false,
+    });
+
+    const profile = profileQuery.data?.data;
+    const normalizedKycStatus = (profile?.kycStatus || '').toLowerCase();
+    const isVerified = normalizedKycStatus === 'approved';
+
+    // Pre-provision / Pre-fetch USDC (CaaS) Smart Contract Wallet on layout load only when KYC verified
+    useQuery({
+        queryKey: ['cryptoWallet'],
+        queryFn: () => accountService.getCryptoWallet(),
+        enabled: FEATURE_FLAGS.ALLOW_CRYPTO && !!profile && isVerified,
+        refetchOnWindowFocus: false,
+        retry: false,
+    });
+
+    const isHiddenCryptoRoute = !FEATURE_FLAGS.ALLOW_CRYPTO &&
+        (pathname === '/exchange' || pathname.startsWith('/exchange/'));
+
+    useEffect(() => {
+        if (isHiddenCryptoRoute) {
+            router.replace('/dashboard');
+        }
+    }, [isHiddenCryptoRoute, router]);
+
+    // Route Protection Effect: lock non-verification pages if not verified
+    useEffect(() => {
+        if (profile && !isVerified) {
+            const isAllowedPath = pathname.startsWith('/settings');
+            if (!isAllowedPath) {
+                toast.error('Identity verification required. Complete your compliance verification to unlock all portal features.', {
+                    id: 'kyc-protection-toast'
+                });
+                router.replace('/settings');
+            }
+        }
+    }, [profile, isVerified, pathname, router]);
+
+    // Countdown for Resend OTP code
+    useEffect(() => {
+        if (!profileQuery.data?.data || profileQuery.data.data.isEmailVerified) return;
+        if (timer <= 0) return;
+        const interval = setInterval(() => {
+            setTimer((prev) => prev - 1);
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [timer, profileQuery.data]);
+
+    // Mutations
+    const verifyEmailMutation = useMutation({
+        mutationFn: (code: string) => authService.verifyEmail(code),
+        onSuccess: (data) => {
+            if (data?.success) {
+                toast.success('Email verified successfully!');
+                queryClient.invalidateQueries({ queryKey: ['profile'] });
+            } else {
+                toast.error(data?.error?.message || 'Verification code is invalid.');
+            }
+        },
+        onError: (err: any) => {
+            const rawError = err.response?.data?.error;
+            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to verify email.');
+            toast.error(msg);
+        }
+    });
+
+    const resendOtpMutation = useMutation({
+        mutationFn: () => authService.resendOtp(),
+        onSuccess: (data) => {
+            if (data?.success) {
+                toast.success('New verification code sent to your email!');
+                setTimer(30);
+            } else {
+                toast.error(data?.error?.message || 'Failed to resend code.');
+            }
+        },
+        onError: (err: any) => {
+            const rawError = err.response?.data?.error;
+            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to resend OTP.');
+            toast.error(msg);
+        }
+    });
+
+    const handleVerifySubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (otpCode.length < 4) {
+            toast.error('Please enter a valid verification code.');
+            return;
+        }
+        verifyEmailMutation.mutate(otpCode);
+    };
+
+    const handleSignOut = () => {
+        authService.logout().finally(() => {
+            queryClient.clear();
+            localStorage.removeItem('account_type');
+            router.push('/login');
+        });
+    };
+
+    // Full page loading overlay for session setups
+    if (profileQuery.isLoading) {
+        return (
+            <div className="h-screen w-screen bg-[#050816] flex flex-col items-center justify-center space-y-4">
+                <SpinnerIcon className="h-10 w-10 text-primary-500 animate-spin" />
+                <p className="text-xs text-slate-550 font-sans">Connecting to secure banking session...</p>
+            </div>
+        );
+    }
+
+    // Block page view if email is unverified
+    if (profile && !profile.isEmailVerified) {
+        return (
+            <div className="h-screen w-screen bg-[#050816] text-white flex items-center justify-center p-6 select-none relative overflow-hidden">
+                <div className="absolute right-[-150px] top-[-150px] w-[350px] h-[350px] rounded-full bg-primary-500/10 blur-[90px] pointer-events-none"></div>
+
+                <div className="bg-[#080E1E] border border-white/5 rounded-3xl p-8 max-w-md w-full shadow-2xl space-y-6 text-center">
+                    <div className="space-y-4">
+                        <div className="relative inline-flex items-center justify-center">
+                            <div className="absolute inset-0 rounded-full bg-primary-500/20 blur-[15px]"></div>
+                            <div className="relative w-14 h-14 rounded-full bg-primary-500/10 border border-primary-500/25 flex items-center justify-center text-primary-400">
+                                <ShieldAlert className="h-7 w-7" />
+                            </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <h3 className="font-satoshi font-black text-xl text-white">Verify your Email</h3>
+                            <p className="text-slate-455 text-xs font-sans leading-relaxed">
+                                We sent a verification code to <strong className="text-slate-200">{profile.email}</strong>. Enter it below to unlock your account.
+                            </p>
+                        </div>
+                    </div>
+
+                    <form onSubmit={handleVerifySubmit} className="space-y-4">
+                        <input
+                            type="text"
+                            required
+                            maxLength={6}
+                            placeholder="Enter 6-digit code"
+                            value={otpCode}
+                            onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, ''))}
+                            className="bg-black/35 border border-white/10 rounded-xl px-4.5 py-3.5 text-center text-white focus:outline-none focus:border-primary-500/50 w-full font-mono font-black text-xl tracking-[0.2em] placeholder-slate-700"
+                        />
+
+                        <button
+                            type="submit"
+                            disabled={verifyEmailMutation.isPending || otpCode.length < 5}
+                            className={cn(
+                                "w-full py-3.5 rounded-xl font-bold text-xs tracking-wide shadow-lg transition duration-200 cursor-pointer active:scale-[0.98]",
+                                otpCode.length >= 5 && !verifyEmailMutation.isPending
+                                    ? "bg-primary-500 hover:bg-primary-450 text-white"
+                                    : "bg-slate-800 text-slate-550 cursor-not-allowed"
+                            )}
+                        >
+                            {verifyEmailMutation.isPending ? 'Verifying...' : 'Unlock Account'}
+                        </button>
+                    </form>
+
+                    <div className="flex justify-between items-center text-[10px] font-bold px-1 select-none">
+                        {timer > 0 ? (
+                            <span className="text-slate-500">Resend code in 00:{timer.toString().padStart(2, '0')}</span>
+                        ) : (
+                            <button
+                                onClick={() => resendOtpMutation.mutate()}
+                                disabled={resendOtpMutation.isPending}
+                                className="text-primary-400 hover:underline cursor-pointer"
+                            >
+                                {resendOtpMutation.isPending ? 'Sending...' : 'Resend Code'}
+                            </button>
+                        )}
+
+                        <button
+                            onClick={handleSignOut}
+                            className="text-rose-455 hover:underline cursor-pointer flex items-center space-x-1"
+                        >
+                            <LogOut className="h-3 w-3" />
+                            <span>Sign out</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    const isBusiness = accountType === 'business';
+    const navigationLinks = [
+        { label: t('nav.overview'), icon: LayoutDashboard, href: '/dashboard' },
+        { label: t('nav.wallets'), icon: Wallet, href: '/wallets' },
+        // { label: t('nav.vtu'), icon: Smartphone, href: '/vtu' },
+        ...(FEATURE_FLAGS.ALLOW_CRYPTO ? [{ label: t('nav.exchange'), icon: RefreshCw, href: '/exchange' }] : []),
+        { label: t('nav.cards'), icon: CreditCard, href: '/cards' },
+        { label: t('nav.activity'), icon: Clock, href: '/activity' },
+        ...(isBusiness ? [{ label: 'Teams', icon: Users, href: '/teams' }] : []),
+        { label: t('nav.referrals'), icon: Gift, href: '/referrals' },
+        { label: t('nav.support'), icon: HelpCircle, href: '/support' },
+    ];
+    const initials = profile ? `${profile.firstName.slice(0, 1)}${profile.lastName.slice(0, 1)}`.toUpperCase() : 'US';
+    const profileName = isBusiness ? (profile?.companyLegalName || 'Company') : `${profile?.firstName} ${profile?.lastName}`;
+
+    // KYC Status sidebar formatting
+    let kycBadge = '✕ KYC Unverified';
+    let badgeColor = 'text-rose-400 border-rose-500/10 bg-rose-500/5';
+
+    if (normalizedKycStatus === 'approved') {
+        kycBadge = isBusiness ? '✓ KYB Verified' : '✓ KYC Verified';
+        badgeColor = 'text-emerald-400 border-emerald-500/10 bg-emerald-500/5';
+    } else if (['under_review', 'processing'].includes(normalizedKycStatus)) {
+        kycBadge = '⚠ KYC Under Review';
+        badgeColor = 'text-orange-400 border-orange-500/10 bg-orange-500/5';
+    } else if (normalizedKycStatus === 'rejected') {
+        kycBadge = '✕ KYC Rejected';
+        badgeColor = 'text-rose-455 border-rose-500/10 bg-rose-500/5';
+    } else { // 'submitted', 'pending', 'draft', 'idle', or initial state
+        kycBadge = '⚠ KYC Incomplete';
+        badgeColor = 'text-amber-400 border-amber-500/10 bg-amber-500/5';
+    }
+
+    if (isHiddenCryptoRoute) return null;
+
+    return (
+        <div className="h-screen w-screen bg-[#050816] text-white flex overflow-hidden">
+
+            {/* Left Fixed Navigation Sidebar */}
+            <aside className="hidden lg:flex w-[260px] border-r border-white/5 bg-[#080E1E] flex-col justify-between p-6 select-none shrink-0 h-full">
+                <div className="space-y-8">
+                    {/* Brand Logo */}
+                    <Logo href={isVerified ? "/dashboard" : "/settings"} size="md" />
+
+                    {/* Navigation Items */}
+                    <div className="space-y-1.5 ">
+                        {navigationLinks.map((link) => {
+                            const IconComponent = link.icon;
+                            const active = pathname.startsWith(link.href);
+                            return (
+                                <Link
+                                    key={link.label}
+                                    href={isVerified ? link.href : '/settings'}
+                                    onClick={(e) => {
+                                        if (!isVerified) {
+                                            e.preventDefault();
+                                            toast.error(`Verification Required: Access to ${link.label} is locked until your identity verification is approved.`, {
+                                                id: `nav-lock-${link.href}`
+                                            });
+                                            router.push('/settings');
+                                        }
+                                    }}
+                                    className={cn(
+                                        "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-semibold transition duration-200 focus:outline-none",
+                                        active
+                                            ? "bg-primary-500/10 border border-primary-500/20 text-primary-400"
+                                            : !isVerified
+                                            ? "text-slate-500 hover:text-slate-400 hover:bg-white/[0.01]"
+                                            : "text-slate-400 hover:text-white hover:bg-white/[0.02]"
+                                    )}
+                                >
+                                    <div className="flex items-center space-x-3">
+                                        <IconComponent className="h-5 w-5" />
+                                        <span>{link.label}</span>
+                                    </div>
+                                    {!isVerified && (
+                                        <Lock className="h-3.5 w-3.5 text-amber-400/70 shrink-0" />
+                                    )}
+                                </Link>
+                            )
+                        })}
+
+                        <div className="h-[1px] bg-white/5 my-4"></div>
+
+                        {/* Settings Button */}
+                        <Link
+                            href="/settings"
+                            className={cn(
+                                "w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-semibold transition duration-200 focus:outline-none",
+                                pathname.startsWith('/settings')
+                                    ? "bg-primary-500/10 border border-primary-500/20 text-primary-400"
+                                    : "text-slate-400 hover:text-white hover:bg-white/[0.02]"
+                            )}
+                        >
+                            <Settings className="h-5 w-5" />
+                            <span>{t('nav.settings')}</span>
+                        </Link>
+                    </div>
+                </div>
+
+                {/* Bottom Profile Details */}
+                <div className="space-y-4 pt-4 border-t border-white/5">
+                    {/* Profile verification indicator */}
+                    <div
+                        onClick={() => router.push('/settings')}
+                        className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5 cursor-pointer hover:bg-white/[0.04] transition"
+                    >
+                        <div className="flex items-center space-x-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-primary-500/15 flex items-center justify-center text-primary-400 shrink-0">
+                                <span className="font-bold text-xs font-satoshi">{isBusiness ? '🏢' : '👤'}</span>
+                            </div>
+                            <div className="text-left min-w-0">
+                                <h4 className="text-xs font-bold text-white truncate max-w-[110px]">{profileName}</h4>
+                                <span className={cn("text-[9px] font-bold uppercase tracking-wider block mt-0.5 border px-1 py-0.5 rounded-sm truncate", badgeColor)}>
+                                    {kycBadge}
+                                </span>
+                            </div>
+                        </div>
+                        <svg className="h-3.5 w-3.5 text-slate-500 fill-current shrink-0" viewBox="0 0 20 20">
+                            <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+                        </svg>
+                    </div>
+
+                    {/* Support & Logout */}
+                    <div className="space-y-1">
+                        <button
+                            onClick={handleSignOut}
+                            className="w-full flex items-center space-x-3 px-4 py-2 text-xs font-semibold text-rose-455 hover:text-rose-350 transition rounded-lg"
+                        >
+                            <LogOut className="h-4 w-4" />
+                            <span>{t('nav.signout')}</span>
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            {/* Main Portal Dashboard Content Area */}
+            <div className="flex-grow flex flex-col h-full overflow-hidden">
+
+                {/* Top Search Header */}
+                <header className="h-20 border-b border-white/5 px-6 lg:px-8 flex items-center justify-between lg:justify-end sticky top-0 bg-[#050816]/80 backdrop-blur z-30 select-none shrink-0">
+
+                    {/* Brand Logo on Mobile Left */}
+                    <div className="lg:hidden shrink-0">
+                        <Logo href="/dashboard" size="md" />
+                    </div>
+
+                    {/* Notification & Avatar controls + Hamburger beside it on Mobile */}
+                    <div className="flex items-center space-x-3 lg:space-x-4">
+                        <LanguageSelector />
+
+                        {/* <Link
+                            href="/settings/notifications"
+                            className="relative w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/5 transition"
+                        >
+                            <Bell className="h-4 w-4" />
+                            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-primary-400"></span>
+                        </Link> */}
+
+                        <Link
+                            href="/settings"
+                            className="w-8 h-8 rounded-full bg-brand-gradient flex items-center justify-center font-bold text-white text-xs select-none hover:opacity-90 transition cursor-pointer active:scale-95 max-[400px]:hidden"
+                        >
+                            {initials}
+                        </Link>
+
+                        {/* Mobile Menu Toggle Button (Beside Avatar) */}
+                        <button
+                            onClick={() => setMobileMenuOpen(true)}
+                            className="lg:hidden p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition duration-200"
+                        >
+                            <Menu className="h-5 w-5" />
+                        </button>
+                    </div>
+
+                </header>
+
+                {/* Banner notice for unverified KYC status */}
+                {profile && normalizedKycStatus !== 'approved' && (
+                    <div className={cn(
+                        "px-8 py-3.5 border-b flex items-center justify-between text-xs font-semibold select-none animate-in slide-in-from-top duration-300",
+                        ['under_review', 'processing'].includes(normalizedKycStatus)
+                            ? "bg-amber-500/5 border-amber-500/10 text-amber-400"
+                            : normalizedKycStatus === 'rejected'
+                            ? "bg-rose-500/5 border-rose-500/10 text-rose-455"
+                            : "bg-amber-500/5 border-amber-500/10 text-amber-400"
+                    )}>
+                        <div className="flex items-center space-x-3.5">
+                            <ShieldWarning className="h-5 w-5 shrink-0" />
+                            <p>
+                                {['under_review', 'processing'].includes(normalizedKycStatus)
+                                    ? t('settings.verification.banner.alertUnderReview')
+                                    : normalizedKycStatus === 'rejected'
+                                    ? t('settings.verification.banner.alertRejected')
+                                    : t('settings.verification.banner.alertIncomplete')}
+                            </p>
+                        </div>
+                        {!['under_review', 'processing'].includes(normalizedKycStatus) && (
+                            <Link
+                                href="/settings"
+                                className="px-4.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500 hover:text-black text-amber-300 transition font-bold shrink-0 text-[10.5px] uppercase tracking-wider"
+                            >
+                                {['submitted', 'draft', 'pending', 'idle'].includes(normalizedKycStatus)
+                                    ? t('settings.verification.banner.btnComplete')
+                                    : t('settings.verification.banner.btnVerify')}
+                            </Link>
+                        )}
+                    </div>
+                )}
+
+                {/* Inner Pages Content */}
+                <div className="p-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8 flex-grow overflow-y-auto">
+                    {!isVerified && !pathname.startsWith('/settings') ? (
+                        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-8 space-y-6 bg-[#080E1E] border border-white/5 rounded-3xl animate-in fade-in duration-300">
+                            <div className="relative">
+                                <div className="absolute inset-0 rounded-full bg-amber-500/20 blur-[25px]"></div>
+                                <div className="relative w-16 h-16 rounded-3xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400">
+                                    <Lock className="h-8 w-8" />
+                                </div>
+                            </div>
+
+                            <div className="max-w-md space-y-2">
+                                <h3 className="text-xl font-bold text-white font-satoshi">Identity Verification Required</h3>
+                                <p className="text-xs text-slate-400 leading-relaxed">
+                                    All portal features (Wallets, Exchanges, Cards, and Transfers) remain locked until your compliance verification is completed and approved.
+                                </p>
+                            </div>
+
+                            <Link
+                                href="/settings"
+                                className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-xl transition cursor-pointer"
+                            >
+                                Complete Verification Now
+                            </Link>
+                        </div>
+                    ) : (
+                        children
+                    )}
+                </div>
+
+                {/* Global Action Sheets (Only enabled when verified) */}
+                {isVerified && (
+                    <>
+                        <SendMoneySheet />
+                        <ReceiveMoneySheet />
+                        <FundCardSheet />
+                        <NewCardSheet />
+                        {FEATURE_FLAGS.ALLOW_CRYPTO && <PhoneSendSheet />}
+                    </>
+                )}
+
+            </div>
+
+            {/* Mobile Sidebar Overlay Drawer */}
+            {mobileMenuOpen && (
+                <div className="fixed inset-0 z-50 lg:hidden flex">
+                    {/* Backdrop */}
+                    <div
+                        className="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 animate-in fade-in"
+                        onClick={() => setMobileMenuOpen(false)}
+                    />
+
+                    {/* Drawer Content */}
+                    <div className="relative w-[280px] bg-[#080E1E] border-r border-white/5 flex flex-col justify-between p-6 h-full select-none animate-in slide-in-from-left duration-300 shadow-2xl">
+                        <div className="space-y-8">
+                            {/* Brand Logo & Close Button */}
+                            <div className="flex items-center justify-between w-full">
+                                <Logo href={isVerified ? "/dashboard" : "/settings"} size="md" onClick={() => setMobileMenuOpen(false)} />
+                                <button
+                                    onClick={() => setMobileMenuOpen(false)}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+
+                            {/* Navigation Items */}
+                            <div className="space-y-1.5">
+                                {navigationLinks.map((link) => {
+                                    const IconComponent = link.icon;
+                                    const active = pathname === link.href;
+                                    return (
+                                        <Link
+                                            key={link.label}
+                                            href={isVerified ? link.href : '/settings'}
+                                            onClick={(e) => {
+                                                if (!isVerified) {
+                                                    e.preventDefault();
+                                                    toast.error(`Verification Required: Access to ${link.label} is locked until your identity verification is approved.`, {
+                                                        id: `mobile-nav-lock-${link.href}`
+                                                    });
+                                                    router.push('/settings');
+                                                }
+                                                setMobileMenuOpen(false);
+                                            }}
+                                            className={cn(
+                                                "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-semibold transition duration-200 focus:outline-none",
+                                                active
+                                                    ? "bg-primary-500/10 border border-primary-500/20 text-primary-400"
+                                                    : !isVerified
+                                                    ? "text-slate-500 hover:text-slate-400 hover:bg-white/[0.01]"
+                                                    : "text-slate-400 hover:text-white hover:bg-white/[0.02]"
+                                            )}
+                                        >
+                                            <div className="flex items-center space-x-3">
+                                                <IconComponent className="h-5 w-5" />
+                                                <span>{link.label}</span>
+                                            </div>
+                                            {!isVerified && (
+                                                <Lock className="h-3.5 w-3.5 text-amber-400/70 shrink-0" />
+                                            )}
+                                        </Link>
+                                    )
+                                })}
+
+                                <div className="h-[1px] bg-white/5 my-4"></div>
+
+                                {/* Settings Button */}
+                                <Link
+                                    href="/settings"
+                                    onClick={() => setMobileMenuOpen(false)}
+                                    className={cn(
+                                        "w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-semibold transition duration-200 focus:outline-none",
+                                        pathname.startsWith('/settings')
+                                            ? "bg-primary-500/10 border border-primary-500/20 text-primary-400"
+                                            : "text-slate-400 hover:text-white hover:bg-white/[0.02]"
+                                    )}
+                                >
+                                    <Settings className="h-5 w-5" />
+                                    <span>Settings</span>
+                                </Link>
+                            </div>
+                        </div>
+
+                        {/* Bottom Profile Details */}
+                        <div className="space-y-4 pt-4 border-t border-white/5">
+                            {/* Profile verification indicator */}
+                            <div
+                                onClick={() => {
+                                    setMobileMenuOpen(false);
+                                    router.push('/settings');
+                                }}
+                                className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5 cursor-pointer hover:bg-white/[0.04] transition"
+                            >
+                                <div className="flex items-center space-x-2.5 min-w-0">
+                                    <div className="w-8 h-8 rounded-lg bg-primary-500/15 flex items-center justify-center text-primary-400 shrink-0">
+                                        <span className="font-bold text-xs font-satoshi">{isBusiness ? '🏢' : '👤'}</span>
+                                    </div>
+                                    <div className="text-left min-w-0">
+                                        <h4 className="text-xs font-bold text-white truncate max-w-[110px]">{profileName}</h4>
+                                        <span className={cn("text-[9px] font-bold uppercase tracking-wider block mt-0.5 border px-1 py-0.5 rounded-sm truncate", badgeColor)}>
+                                            {kycBadge}
+                                        </span>
+                                    </div>
+                                </div>
+                                <svg className="h-3.5 w-3.5 text-slate-500 fill-current shrink-0" viewBox="0 0 20 20">
+                                    <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+                                </svg>
+                            </div>
+
+                            {/* Support & Logout */}
+                            <div className="space-y-1">
+                                <button
+                                    onClick={handleSignOut}
+                                    className="w-full flex items-center space-x-3 px-4 py-2 text-xs font-semibold text-rose-455 hover:text-rose-350 transition rounded-lg"
+                                >
+                                    <LogOut className="h-4 w-4" />
+                                    <span>Sign out</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+        </div>
+    )
+}

@@ -1,0 +1,719 @@
+package handlers
+
+import (
+	"time"
+
+	db "github.com/rachfinance/digitalfx/internal/db/sqlc"
+)
+
+// ─── Common ───────────────────────────────────────────────────────────────────
+
+// ErrorResponse is the standard error envelope returned on 4xx/5xx.
+type ErrorResponse struct {
+	Success bool `json:"success" example:"false"`
+	Error   struct {
+		Code    string `json:"code" example:"VALIDATION_ERROR"`
+		Message string `json:"message" example:"phone is required"`
+	} `json:"error"`
+}
+
+// MessageResponse is returned when there is no data payload, only a confirmation.
+type MessageResponse struct {
+	Success bool   `json:"success" example:"true"`
+	Message string `json:"message" example:"OTP sent"`
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+type SendOTPRequest struct {
+	Phone string `json:"phone" example:"+237612345678"`
+}
+
+type VerifyOTPRequest struct {
+	Phone string `json:"phone" example:"+237612345678"`
+	Code  string `json:"code" example:"123456"`
+}
+
+type RegisterRequest struct {
+	AccountType string `json:"account_type" example:"individual"` // "individual" (default) | "business"
+	Phone       string `json:"phone" example:"+237612345678"`
+	Email       string `json:"email" example:"alice@example.com"`
+	FirstName   string `json:"first_name" example:"Alice"`
+	LastName    string `json:"last_name" example:"Dupont"`
+	PIN         string `json:"pin" example:"123456"`
+	Country     string `json:"country" example:"CM"` // ISO 3166-1 alpha-2
+	// NOTE: BVN is NOT collected at signup — it is an optional field in the KYC
+	// intake (POST /kyc/intake) and activates the Nigerian (NGN) account.
+	// Business accounts only — company-level KYB fields collected at signup.
+	CompanyLegalName       string `json:"company_legal_name,omitempty" example:"Acme SARL"`
+	CompanyRegistrationNo  string `json:"company_registration_no,omitempty" example:"RC/DLA/2020/B/1234"`
+	Industry               string `json:"industry,omitempty" example:"fintech"`
+	CountryOfIncorporation string `json:"country_of_incorporation,omitempty" example:"CM"`
+	AnnualRevenue          string `json:"annual_revenue,omitempty" example:"$50k-$500k"`
+	BusinessWebsite        string `json:"business_website,omitempty" example:"https://acme.example.com"`
+}
+
+type LoginRequest struct {
+	Phone string `json:"phone" example:"+237612345678"`
+	PIN   string `json:"pin" example:"123456"`
+}
+
+type RefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token" example:"eyJhbGci..."`
+}
+
+// ResendVerificationRequest identifies the account to resend a verification code to.
+type ResendVerificationRequest struct {
+	EmailOrPhone string `json:"email_or_phone" example:"alice@example.com"`
+}
+
+type TokenPairData struct {
+	AccessToken  string `json:"access_token" example:"eyJhbGci..."`
+	RefreshToken string `json:"refresh_token" example:"eyJhbGci..."`
+	ExpiresIn    int64  `json:"expires_in" example:"1800"`
+	SessionID    string `json:"session_id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	// AccountType ("individual" | "business") is included on auth responses so
+	// the frontend can branch on tier without a separate profile call.
+	AccountType string `json:"account_type,omitempty" example:"individual"`
+}
+
+type TokenPairResponse struct {
+	Success bool          `json:"success" example:"true"`
+	Data    TokenPairData `json:"data"`
+}
+
+// ─── Accounts ─────────────────────────────────────────────────────────────────
+
+type AccountData struct {
+	ID               string    `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	UserID           string    `json:"user_id" example:"550e8400-e29b-41d4-a716-446655440001"`
+	Currency         string    `json:"currency" example:"XAF"`
+	Balance          string    `json:"balance" example:"5000.000000"`
+	AvailableBalance string    `json:"available_balance" example:"5000.000000"`
+	AccountNumber    string    `json:"account_number" example:"DFX0000001"`
+	Status           string    `json:"status" example:"active"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type AccountListResponse struct {
+	Success bool          `json:"success" example:"true"`
+	Data    []AccountData `json:"data"`
+}
+
+type AccountResponse struct {
+	Success bool        `json:"success" example:"true"`
+	Data    AccountData `json:"data"`
+}
+
+type TransactionData struct {
+	ID          string    `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	Reference   string    `json:"reference" example:"TXN-20240101-001"`
+	AccountID   string    `json:"account_id"`
+	Type        string    `json:"type" example:"credit"`
+	Amount      string    `json:"amount" example:"5000.000000"`
+	Currency    string    `json:"currency" example:"XAF"`
+	Fee         string    `json:"fee" example:"0.000000"`
+	Description string    `json:"description" example:"Deposit via MTN Mobile Money"`
+	Status      string    `json:"status" example:"completed"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type PaginationMeta struct {
+	Page       int `json:"page" example:"1"`
+	PerPage    int `json:"per_page" example:"20"`
+	Total      int `json:"total" example:"100"`
+	TotalPages int `json:"total_pages" example:"5"`
+}
+
+type TransactionListResponse struct {
+	Success bool              `json:"success" example:"true"`
+	Data    []TransactionData `json:"data"`
+	Meta    PaginationMeta    `json:"meta"`
+}
+
+type TransactionResponse struct {
+	Success bool            `json:"success" example:"true"`
+	Data    TransactionData `json:"data"`
+}
+
+// ─── WaaS Wallets ─────────────────────────────────────────────────────────────
+
+type CreateWalletRequest struct {
+	// Network is the blockchain network. Supported: BTC BCH LTC BSC ETH POL TRX SOL XRP
+	Network string `json:"network" example:"ETH" enums:"BTC,BCH,LTC,BSC,ETH,POL,TRX,SOL,XRP"`
+}
+
+type WalletData struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	WaasWalletID string    `json:"waas_wallet_id" example:"cust_abc123"`
+	Network      string    `json:"network" example:"ETH"`
+	Address      string    `json:"address" example:"0xabc123..."`
+	IsDefault    bool      `json:"is_default" example:"true"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type WalletListResponse struct {
+	Success bool         `json:"success" example:"true"`
+	Data    []WalletData `json:"data"`
+}
+
+type WalletResponse struct {
+	Success bool       `json:"success" example:"true"`
+	Data    WalletData `json:"data"`
+}
+
+type DepositRequest struct {
+	Currency string  `json:"currency" example:"XAF"`
+	Amount   float64 `json:"amount" example:"5000"`
+	Phone    string  `json:"phone" example:"+237612345678"`
+	Operator string  `json:"operator" example:"MTN"`
+}
+
+type WithdrawalRequest struct {
+	Currency string  `json:"currency" example:"XAF"`
+	Amount   float64 `json:"amount" example:"5000"`
+	Phone    string  `json:"phone" example:"+237612345678"`
+	Operator string  `json:"operator" example:"ORANGE"`
+}
+
+type Hub2RefData struct {
+	Hub2Reference string `json:"hub2_reference" example:"HUB2-REF-001"`
+}
+
+type Hub2RefResponse struct {
+	Success bool        `json:"success" example:"true"`
+	Data    Hub2RefData `json:"data"`
+}
+
+// ─── CaaS / Crypto ────────────────────────────────────────────────────────────
+
+type CaasWalletData struct {
+	ID                 string    `json:"id"`
+	UserID             string    `json:"user_id"`
+	CaasWalletID       string    `json:"caas_wallet_id" example:"0xblindindex..."`
+	AbstractionAddress string    `json:"abstraction_address" example:"0xSCW123..."`
+	IsActive           bool      `json:"is_active" example:"true"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+type CaasWalletResponse struct {
+	Success bool           `json:"success" example:"true"`
+	Data    CaasWalletData `json:"data"`
+}
+
+// TokenBalanceData is one stablecoin balance (USDC or USDT) on the SCW.
+type TokenBalanceData struct {
+	Symbol           string  `json:"symbol" example:"USDT"`
+	Name             string  `json:"name" example:"Stablecoin"`
+	Balance          float64 `json:"balance" example:"50"`
+	BalanceRaw       string  `json:"balance_raw" example:"50.000000"`
+	BalanceFormatted string  `json:"balance_formatted" example:"50.00 USDT"`
+}
+
+type BalanceData struct {
+	// Tokens holds the per-stablecoin balances — USDC and USDT (CaaS supports both). Prefer this.
+	Tokens []TokenBalanceData `json:"tokens"`
+	// WalletAddress is the customer's on-chain SCW address (always present).
+	WalletAddress string `json:"wallet_address" example:"0x1234567890abcdef1234567890abcdef12345678"`
+	// Symbol is the back-compat asset symbol (USDC).
+	Symbol string `json:"symbol" example:"USDC"`
+	// Name is the customer-facing asset name (always "Stablecoin").
+	Name string `json:"name" example:"Stablecoin"`
+	// Balance is the numeric USDC balance (back-compat; see tokens for USDT).
+	Balance float64 `json:"balance" example:"100"`
+	// BalanceUSDC is the raw on-chain USDC balance (decimal string).
+	BalanceUSDC string `json:"balance_usdc" example:"100.000000"`
+	// BalanceUSDT is the raw on-chain USDT balance (decimal string).
+	BalanceUSDT string `json:"balance_usdt" example:"50.000000"`
+	// BalanceFormatted is a display string for USDC, e.g. "100.00 USDC".
+	BalanceFormatted string `json:"balance_formatted" example:"100.00 USDC"`
+}
+
+type CryptoBalanceResponse struct {
+	Success bool        `json:"success" example:"true"`
+	Data    BalanceData `json:"data"`
+}
+
+// FundAccountRequest is the body for POST /crypto/fund.
+// The customer specifies how much XOF/XAF to collect via Mobile Money
+// and which stablecoin they want in their Stablecoin Account.
+type FundAccountRequest struct {
+	// Currency of the Mobile Money deposit: XOF or XAF
+	Currency string `json:"currency" example:"XOF" enums:"XOF,XAF"`
+	// Amount in local fiat (minimum 100)
+	Amount float64 `json:"amount" example:"20000" minimum:"100"`
+	// Phone is the Mobile Money number to pull from (E.164)
+	Phone string `json:"phone" example:"+22507000000"`
+	// Operator is the Mobile Money provider
+	Operator string `json:"operator" example:"MTN" enums:"Orange,MTN,Wave,Moov,Airtel"`
+	// Token is the target stablecoin — defaults to USDC
+	Token string `json:"token" example:"USDC" enums:"USDC,USDT"`
+}
+
+// WithdrawCryptoRequest initiates a stablecoin off-ramp from the user's
+// Smart Contract Wallet to a Mobile Money number.
+type WithdrawCryptoRequest struct {
+	// Amount is the stablecoin amount to withdraw (decimal string)
+	Amount string `json:"amount" example:"50.00"`
+	// Token must be USDT or USDC
+	Token string `json:"token" example:"USDC" enums:"USDC,USDT"`
+	// PayoutMobile is the Mobile Money number to disburse fiat to (E.164)
+	PayoutMobile string `json:"payout_mobile" example:"+22507000000"`
+	// PayoutNetwork is the MNO operator
+	PayoutNetwork string `json:"payout_network" example:"MTN" enums:"Orange,MTN,Wave,Moov,Airtel"`
+}
+
+type SendCryptoRequest struct {
+	// ReceiverPhone addresses the recipient by E.164 phone number. Provide EITHER
+	// receiver_phone OR recipient_address (exactly one). A phone that has never been
+	// provisioned is created on the fly by CaaS and the recipient is notified by SMS.
+	ReceiverPhone string `json:"receiver_phone,omitempty" example:"+237698765432"`
+	// RecipientAddress addresses the recipient by a raw 0x-prefixed SCW wallet
+	// address (42 chars). Provide EITHER receiver_phone OR recipient_address. The
+	// wallet must already exist — unlike a phone, an address cannot be auto-provisioned.
+	RecipientAddress string `json:"recipient_address,omitempty" example:"0x1234567890abcdef1234567890abcdef12345678"`
+	// Token must be USDT or USDC
+	Token  string `json:"token" example:"USDC" enums:"USDT,USDC"`
+	Amount string `json:"amount" example:"50.00"`
+}
+
+type CryptoTxData struct {
+	ID           string `json:"id"`
+	Reference    string `json:"reference" example:"CRYPTO-REF-001"`
+	SenderUserID string `json:"sender_user_id"`
+	// ReceiverPhone is set when the recipient was addressed by phone (else null).
+	ReceiverPhone string `json:"receiver_phone,omitempty" example:"+237698765432"`
+	// ReceiverAddress is set when the recipient was addressed by wallet (else null).
+	ReceiverAddress string    `json:"receiver_address,omitempty" example:"0x1234567890abcdef1234567890abcdef12345678"`
+	Token           string    `json:"token" example:"USDC"`
+	Amount          string    `json:"amount" example:"50.00"`
+	TxHash          string    `json:"tx_hash,omitempty"`
+	Status          string    `json:"status" example:"pending"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type CryptoTxResponse struct {
+	Success bool         `json:"success" example:"true"`
+	Data    CryptoTxData `json:"data"`
+}
+
+type CryptoTxListResponse struct {
+	Success bool           `json:"success" example:"true"`
+	Data    []CryptoTxData `json:"data"`
+}
+
+// ─── Transfers ────────────────────────────────────────────────────────────────
+
+type InternalTransferRequest struct {
+	ReceiverPhone string  `json:"receiver_phone" example:"+237698765432"`
+	Currency      string  `json:"currency" example:"XAF"`
+	Amount        float64 `json:"amount" example:"5000"`
+	Description   string  `json:"description" example:"Monthly payment"`
+}
+
+// SwapRequest is the body for a USDC ⇄ USDT swap on the user's Stablecoin (CaaS) wallet.
+type SwapRequest struct {
+	TokenIn  string `json:"token_in" example:"USDC"`
+	TokenOut string `json:"token_out" example:"USDT"`
+	Amount   string `json:"amount" example:"100.00"`
+}
+
+// SwapResponse mirrors a caas_swaps record: the recorded swap and its lifecycle status.
+type SwapResponse struct {
+	ID         string  `json:"id" example:"7b2c…"`
+	Reference  string  `json:"reference" example:"SWAP-1a2b3c4d"`
+	TokenIn    string  `json:"token_in" example:"USDC"`
+	TokenOut   string  `json:"token_out" example:"USDT"`
+	AmountIn   string  `json:"amount_in" example:"100.00"`
+	AmountOut  *string `json:"amount_out" example:"99.80"`
+	Status     string  `json:"status" example:"processing"` // pending|processing|settled|failed
+	CaasSwapID *string `json:"caas_swap_id" example:"rach_swap_abc123"`
+	TxHash     *string `json:"tx_hash" example:"0x…"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+type Hub2PaymentRequest struct {
+	Currency string  `json:"currency" example:"XAF"`
+	Amount   float64 `json:"amount" example:"5000"`
+	Phone    string  `json:"phone" example:"+237612345678"`
+	Operator string  `json:"operator" example:"MTN"`
+	// PaymentMethod e.g. mobile_money
+	PaymentMethod string `json:"payment_method" example:"mobile_money"`
+	// Direction: collection (deposit) or disbursement (withdrawal)
+	Direction string `json:"direction" example:"collection" enums:"collection,disbursement"`
+}
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+
+type AdminKYCRejectRequest struct {
+	Reason string `json:"reason" example:"Document image is blurry or expired"`
+}
+
+// ─── Auth Extended ────────────────────────────────────────────────────────────
+
+// TOTPLoginRequest is the body for POST /auth/2fa/login (step 2 of 2FA login).
+type TOTPLoginRequest struct {
+	Ref  string `json:"ref" example:"a1b2c3d4-totp-pending-ref"`
+	Code string `json:"code" example:"123456"`
+}
+
+type GoogleSignInRequest struct {
+	IDToken string `json:"id_token" example:"eyJhbGci..."`
+}
+
+type GoogleSignInResponse struct {
+	Success   bool          `json:"success" example:"true"`
+	IsNewUser bool          `json:"is_new_user" example:"true"`
+	Data      TokenPairData `json:"data"`
+}
+
+type ForgotPINRequest struct {
+	EmailOrPhone string `json:"email_or_phone" example:"alice@example.com"`
+}
+
+type ResetPINRequest struct {
+	EmailOrPhone string `json:"email_or_phone" example:"alice@example.com"`
+	Code         string `json:"code" example:"123456"`
+	NewPIN       string `json:"new_pin" example:"654321"`
+}
+
+type VerifyEmailRequest struct {
+	Code string `json:"code" example:"123456"`
+}
+
+type DeviceData struct {
+	ID             string    `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	DeviceName     string    `json:"device_name" example:"iPhone"`
+	DeviceIP       string    `json:"device_ip" example:"41.202.207.10"`
+	DeviceLocation string    `json:"device_location" example:"Lagos, Nigeria"`
+	LastUsedAt     time.Time `json:"last_used_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	IsCurrent      bool      `json:"is_current" example:"true"`
+}
+
+type DeviceListResponse struct {
+	Success bool         `json:"success" example:"true"`
+	Data    []DeviceData `json:"data"`
+}
+
+// ─── Profile ──────────────────────────────────────────────────────────────────
+
+type ProfileData struct {
+	ID              string  `json:"id"`
+	PhoneNumber     string  `json:"phone_number" example:"+237612345678"`
+	Email           *string `json:"email" example:"alice@example.com"`
+	FirstName       string  `json:"first_name" example:"Alice"`
+	LastName        string  `json:"last_name" example:"Dupont"`
+	Bio             *string `json:"bio" example:"Digital finance enthusiast from Cameroon"`
+	AvatarURL       *string `json:"avatar_url"`
+	DateOfBirth     *string `json:"date_of_birth" example:"1995-06-15"`
+	Nationality     *string `json:"nationality" example:"Cameroonian"`
+	BVN             *string `json:"bvn" example:"12345678901"`
+	KycStatus       string  `json:"kyc_status" example:"pending"`
+	IsEmailVerified bool    `json:"is_email_verified" example:"false"`
+}
+
+type ProfileResponse struct {
+	Success bool        `json:"success" example:"true"`
+	Data    ProfileData `json:"data"`
+}
+
+// UpdateProfileRequest — only non-sensitive fields are editable by the customer.
+// Name, phone, email and KYC-verified identity fields (date of birth, nationality,
+// BVN) are LOCKED and cannot be changed here; any such fields sent in the body are
+// ignored server-side. Identity changes go through KYC / admin review.
+type UpdateProfileRequest struct {
+	Bio       *string `json:"bio,omitempty" example:"Digital finance enthusiast"`
+	AvatarURL *string `json:"avatar_url,omitempty"`
+}
+
+// ─── Exchange ─────────────────────────────────────────────────────────────────
+
+// ExchangeQuoteRequest is the body for POST /exchange/quote.
+type ExchangeQuoteRequest struct {
+	From   string  `json:"from" example:"USD" enums:"USD,EUR,GBP,XAF,XOF"`
+	To     string  `json:"to" example:"EUR" enums:"USD,EUR,GBP,XAF,XOF"`
+	Amount float64 `json:"amount" example:"500.00"`
+	// Side: SELL = you specify source amount, BUY = you specify target amount
+	Side string `json:"side,omitempty" example:"SELL" enums:"SELL,BUY"`
+}
+
+// ExchangeExecuteRequest is the body for POST /exchange/execute.
+type ExchangeExecuteRequest struct {
+	From   string  `json:"from" example:"USD" enums:"USD,EUR,GBP,XAF,XOF"`
+	To     string  `json:"to" example:"EUR" enums:"USD,EUR,GBP,XAF,XOF"`
+	Amount float64 `json:"amount" example:"500.00"`
+	Side   string  `json:"side,omitempty" example:"SELL" enums:"SELL,BUY"`
+	// QuoteID is optional. Pass the quote_id from POST /exchange/quote to lock the rate.
+	QuoteID string `json:"quote_id,omitempty" example:"quo_abc123"`
+}
+
+// ─── Support ──────────────────────────────────────────────────────────────────
+
+// CreateTicketRequest is the body for POST /support/tickets.
+type CreateTicketRequest struct {
+	Subject string `json:"subject" example:"My transfer is stuck"`
+	// Category one of: general account payment kyc technical card
+	Category string `json:"category" example:"payment" enums:"general,account,payment,kyc,technical,card"`
+	Body     string `json:"body" example:"I sent $50 two days ago and it hasn't arrived."`
+}
+
+// ReplyToTicketRequest is the body for POST /support/tickets/{id}/messages.
+type ReplyToTicketRequest struct {
+	Body string `json:"body" example:"Any update on my issue?"`
+}
+
+// ─── Preferences ──────────────────────────────────────────────────────────────
+
+// UpdatePreferencesRequest is the body for PATCH /profile/preferences.
+type UpdatePreferencesRequest struct {
+	// Language one of: en fr es ar pt
+	Language string `json:"language,omitempty" example:"en" enums:"en,fr,es,ar,pt"`
+	// DarkMode one of: always never system
+	DarkMode string `json:"dark_mode,omitempty" example:"always" enums:"always,never,system"`
+	// BiometricsEnabled toggles fingerprint / Face ID unlock
+	BiometricsEnabled *bool `json:"biometrics_enabled,omitempty" example:"true"`
+}
+
+// ─── MetaMap KYC ──────────────────────────────────────────────────────────────
+
+type MetaMapInitData struct {
+	ApplicantID    string `json:"applicant_id" example:"60f1a2b3c4d5e6f7a8b9c0d1"`
+	IdentityAccess string `json:"identity_access" example:"eyJhbGci..."`
+	FlowID         string `json:"flow_id" example:"60f1a2b3c4d5e6f7a8b9c0d2"`
+	Status         string `json:"status" example:"pending"`
+}
+
+type MetaMapInitResponse struct {
+	Success bool            `json:"success" example:"true"`
+	Data    MetaMapInitData `json:"data"`
+}
+
+// ─── Webhooks ─────────────────────────────────────────────────────────────────
+
+// HUB2WebhookRequest mirrors hub2.WebhookPayload for Swagger documentation.
+type HUB2WebhookRequest struct {
+	Reference string  `json:"reference" example:"HUB2-REF-001"`
+	Status    string  `json:"status" example:"SUCCESSFUL" enums:"SUCCESSFUL,FAILED,CANCELLED,PENDING"`
+	Amount    float64 `json:"amount" example:"20000"`
+	Currency  string  `json:"currency" example:"XOF"`
+	Phone     string  `json:"phone" example:"+22507000000"`
+	Type      string  `json:"type" example:"COLLECTION" enums:"COLLECTION,DISBURSEMENT"`
+}
+
+// ─── KYC ─────────────────────────────────────────────────────────────────────
+
+type KYCStatusData struct {
+	KycStatus string `json:"kyc_status" example:"pending" enums:"pending,approved,rejected"`
+}
+
+type KYCStatusResponse struct {
+	Success bool          `json:"success" example:"true"`
+	Data    KYCStatusData `json:"data"`
+}
+
+type KYCDocumentRequest struct {
+	// DocType is the kind of document. Individual KYC: national_id | passport |
+	// selfie | proof_of_address. Business (KYB, Nilos merchant onboarding):
+	// certificate_of_incorporation | director_register | shareholder_register |
+	// articles_of_association | proof_of_address | proof_of_address_ubo |
+	// proof_of_company_activity | business_bank_statement | proof_of_imports |
+	// id_document | idv_liveness | proof_of_wealth. Which ones apply (and whether
+	// required) is returned by GET /kyc/requirements documents[].
+	DocType string `json:"doc_type" example:"certificate_of_incorporation" enums:"national_id,passport,selfie,proof_of_address,proof_of_address_ubo,certificate_of_incorporation,director_register,shareholder_register,articles_of_association,proof_of_company_activity,business_bank_statement,proof_of_imports,id_document,idv_liveness,proof_of_wealth"`
+	// DocURL is the GCS object path or signed URL returned by the upload endpoint
+	DocURL string `json:"doc_url" example:"https://storage.googleapis.com/digitalfx-kyc-dev/doc.jpg"`
+}
+
+type KYCDocumentData struct {
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	DocType         string    `json:"doc_type" example:"national_id"`
+	DocURL          string    `json:"doc_url"`
+	Status          string    `json:"status" example:"pending"`
+	RejectionReason string    `json:"rejection_reason,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type KYCDocumentResponse struct {
+	Success bool            `json:"success" example:"true"`
+	Data    KYCDocumentData `json:"data"`
+}
+
+type KYCDocumentListResponse struct {
+	Success bool              `json:"success" example:"true"`
+	Data    []KYCDocumentData `json:"data"`
+}
+
+// ─── Admin Staff ──────────────────────────────────────────────────────────────
+
+type InviteStaffRequest struct {
+	Email              string   `json:"email"                example:"alice@example.com"`
+	Name               string   `json:"name"                 example:"Alice Dupont"`
+	Role               string   `json:"role"                 example:"compliance"        enums:"admin,compliance,support,finance,readonly"`
+	DepartmentID       string   `json:"department_id"        example:"" format:"uuid"`
+	CustomPermissions  []string `json:"custom_permissions"   example:"[]"`
+	RevokedPermissions []string `json:"revoked_permissions"  example:"[]"`
+}
+
+type UpdateStaffRequest struct {
+	Role               string   `json:"role"                example:"support"  enums:"admin,compliance,support,finance,readonly"`
+	CustomPermissions  []string `json:"custom_permissions"  example:"[]"`
+	RevokedPermissions []string `json:"revoked_permissions" example:"[]"`
+}
+
+type AcceptInviteRequest struct {
+	Email string `json:"email" example:"alice@example.com"`
+	OTP   string `json:"otp"   example:"482913"`
+}
+
+// SetStaffDepartmentRequest assigns/clears a staff member's department.
+type SetStaffDepartmentRequest struct {
+	DepartmentID *string `json:"department_id" example:"" format:"uuid"` // null to clear
+}
+
+// DepartmentRequest creates/updates a department.
+type DepartmentRequest struct {
+	Name        string `json:"name"        example:"Compliance"`
+	Description string `json:"description" example:"Handles KYC/AML review"`
+}
+
+// ─── Admin Users ──────────────────────────────────────────────────────────────
+
+type DisableUserRequest struct {
+	Reason string `json:"reason" example:"Suspicious activity — pending investigation"`
+}
+
+// ─── Team (merchant staff) ────────────────────────────────────────────────────
+
+// RolePermissionsEntry is one merchant role with its permission grants.
+type RolePermissionsEntry struct {
+	Role        string   `json:"role" example:"manager"`
+	Permissions []string `json:"permissions" example:"team:view,team:invite"`
+}
+
+type RolesPermissionsData struct {
+	Roles []RolePermissionsEntry `json:"roles"`
+}
+
+// RolesPermissionsResponse wraps the available merchant team roles.
+type RolesPermissionsResponse struct {
+	Success bool                 `json:"success" example:"true"`
+	Data    RolesPermissionsData `json:"data"`
+}
+
+// TeamMemberResponse wraps the list of merchant staff members.
+type TeamMemberResponse struct {
+	Success bool               `json:"success" example:"true"`
+	Data    []db.MerchantStaff `json:"data"`
+}
+
+type TeamInviteData struct {
+	Staff       db.MerchantStaff `json:"staff"`
+	InviteToken string           `json:"invite_token" example:"inv_8f3a2b..."`
+}
+
+// TeamInviteResponse is returned after a staff invite is created.
+type TeamInviteResponse struct {
+	Success bool           `json:"success" example:"true"`
+	Data    TeamInviteData `json:"data"`
+}
+
+// InviteTeamMemberRequest invites a new staff member to the business.
+type InviteTeamMemberRequest struct {
+	Email string `json:"email" example:"staff@acme.example.com"`
+	Role  string `json:"role" example:"manager" enums:"manager,developer,viewer"`
+}
+
+// UpdateRoleRequest changes an existing team member's role.
+type UpdateRoleRequest struct {
+	Role string `json:"role" example:"developer" enums:"manager,developer,viewer"`
+}
+
+// ─── Virtual Cards ────────────────────────────────────────────────────────────
+
+type CreateCardRequest struct {
+	FundingAccountID *string `json:"funding_account_id,omitempty" example:"550e8400-e29b-41d4-a716-446655440000"`
+	FundingWalletID  *string `json:"funding_wallet_id,omitempty" example:"550e8400-e29b-41d4-a716-446655440001"`
+	Name             string  `json:"name" example:"My Daily Card"`
+	ColorTheme       string  `json:"color_theme" example:"midnight_blue"`
+	CardArtID        string  `json:"card_art_id" example:"art_abstract_01"`
+}
+
+type UpdateCardRequest struct {
+	Name       *string `json:"name,omitempty" example:"Travel Card"`
+	ColorTheme *string `json:"color_theme,omitempty" example:"sunset_orange"`
+	Status     *string `json:"status,omitempty" example:"frozen"`
+}
+
+type VirtualCardData struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	MaskedPan      string    `json:"masked_pan"`
+	Expiry         string    `json:"expiry"`
+	ColorTheme     string    `json:"color_theme"`
+	CardArtID      string    `json:"card_art_id"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type VirtualCardResponse struct {
+	Success bool            `json:"success" example:"true"`
+	Data    VirtualCardData `json:"data"`
+}
+
+type VirtualCardListResponse struct {
+	Success bool              `json:"success" example:"true"`
+	Data    []VirtualCardData `json:"data"`
+}
+
+// ─── VTU & Bills ──────────────────────────────────────────────────────────────
+
+type PurchaseAirtimeRequest struct {
+	Amount   float64 `json:"amount" example:"1000"`
+	Currency string  `json:"currency" example:"XAF" enums:"XAF,XOF"`
+	Phone    string  `json:"phone" example:"+237612345678"`
+	Operator string  `json:"operator" example:"MTN"`
+}
+
+type PurchaseDataBundleRequest struct {
+	BundleID string  `json:"bundle_id" example:"MTN_DATA_1GB"`
+	Amount   float64 `json:"amount" example:"1000"`
+	Currency string  `json:"currency" example:"XAF" enums:"XAF,XOF"`
+	Phone    string  `json:"phone" example:"+237612345678"`
+	Operator string  `json:"operator" example:"MTN"`
+}
+
+type PayBillRequest struct {
+	BillerID      string  `json:"biller_id" example:"ENEO"`
+	AccountNumber string  `json:"account_number" example:"20019283"`
+	Amount        float64 `json:"amount" example:"5000"`
+	Currency      string  `json:"currency" example:"XAF" enums:"XAF,XOF"`
+}
+
+type VTUTransactionData struct {
+	ID            string    `json:"id"`
+	Amount        string    `json:"amount"`
+	Currency      string    `json:"currency"`
+	ServiceType   string    `json:"service_type" example:"airtime"`
+	Provider      string    `json:"provider" example:"hub2"`
+	TargetPhone   string    `json:"target_phone,omitempty"`
+	TargetAccount string    `json:"target_account,omitempty"`
+	Reference     string    `json:"reference"`
+	Status        string    `json:"status" example:"SUCCESSFUL"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type VTUTransactionResponse struct {
+	Success bool               `json:"success" example:"true"`
+	Data    VTUTransactionData `json:"data"`
+}
+
+type VTUTransactionListResponse struct {
+	Success bool                 `json:"success" example:"true"`
+	Data    []VTUTransactionData `json:"data"`
+}
+
+
+

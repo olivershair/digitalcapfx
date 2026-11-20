@@ -1,0 +1,536 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5/pgxpool"
+	httpSwagger "github.com/swaggo/http-swagger"
+	"go.uber.org/zap"
+
+	"github.com/rachfinance/digitalfx/internal/api/handlers"
+	"github.com/rachfinance/digitalfx/internal/api/middleware"
+	"github.com/rachfinance/digitalfx/internal/config"
+	"github.com/rachfinance/digitalfx/internal/services"
+)
+
+func newRouter(cfg *config.Config, svc *services.Services, pool *pgxpool.Pool, logger *zap.Logger) http.Handler {
+	r := chi.NewRouter()
+
+	// Global middleware
+	r.Use(chimiddleware.RealIP)
+	r.Use(chimiddleware.RequestID)
+	r.Use(chimiddleware.Recoverer)
+	r.Use(middleware.Logger(logger))
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+
+	// Handlers
+	authH := handlers.NewAuthHandler(svc, cfg)
+	profileH := handlers.NewProfileHandler(svc)
+	accountH := handlers.NewAccountHandler(svc)
+	walletH := handlers.NewWalletHandler(svc)
+	caasH := handlers.NewCaaSHandler(svc)
+	transferH := handlers.NewTransferHandler(svc)
+	kycH := handlers.NewKYCHandler(svc)
+	adminH := handlers.NewAdminHandler(svc)
+	dashboardH := handlers.NewDashboardHandler(svc)
+	notificationH := handlers.NewNotificationHandler(svc)
+	withdrawalH := handlers.NewWithdrawalHandler(svc)
+	securityH := handlers.NewSecurityHandler(svc)
+	prefsH := handlers.NewPreferencesHandler(svc)
+	supportH := handlers.NewSupportHandler(svc)
+	walletOverviewH := handlers.NewWalletOverviewHandler(svc)
+	exchangeH := handlers.NewExchangeHandler(svc)
+	activityH := handlers.NewActivityHandler(svc)
+	insightsH := handlers.NewInsightsHandler(svc)
+	adminStaffH := handlers.NewAdminStaffHandler(svc)
+	adminUsersH := handlers.NewAdminUsersHandler(svc)
+	adminAccountsH := handlers.NewAdminAccountsHandler(svc)
+	adminLimitsH := handlers.NewAdminLimitsHandler(svc)
+	adminDeptH := handlers.NewAdminDepartmentsHandler(svc)
+	webhookH := handlers.NewWebhookHandler(svc, cfg.HUB2.SecretKey, logger)
+	businessH := handlers.NewBusinessHandler(svc)
+	teamH := handlers.NewTeamHandler(svc)
+	referralH := handlers.NewReferralHandler(svc)
+	marketH := handlers.NewMarketHandler(svc, logger)
+	swapH := handlers.NewSwapHandler(svc)
+	uploadH := handlers.NewUploadHandler(svc)
+	limitsH := handlers.NewLimitsHandler(svc)
+	cardsH := handlers.NewCardsHandler(svc.Cards)
+	vtuH := handlers.NewVTUHandler(svc.VTU)
+	ratesH := handlers.NewRatesHandler(svc)
+	paymentsWebhookH := handlers.NewPaymentsWebhookHandler(svc, cfg.PaymentsAPI.WebhookSecret, logger)
+	caasWebhookH := handlers.NewCaasWebhookHandler(svc, cfg.CaaS.WebhookSecret, logger)
+	nombaWebhookH := handlers.NewNombaWebhookHandler(svc, logger)
+	nilosWebhookH := handlers.NewNilosWebhookHandler(svc, logger)
+	nombaH := handlers.NewNombaHandler(svc)
+	momoH := handlers.NewMomoHandler(svc)
+	adminMomoH := handlers.NewAdminMomoHandler(svc)
+
+	kycRequired := middleware.KYCRequired(pool)
+
+	// Health
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Maintenance status — public, no auth so the app/frontend can poll it before
+	// login. Controlled by the MAINTENANCE_MODE env var; flip to false to turn off.
+	maintenanceHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		payload := map[string]any{
+			"maintenance_mode": cfg.Server.MaintenanceMode,
+			"message":          "",
+		}
+		if cfg.Server.MaintenanceMode {
+			payload["message"] = cfg.Server.MaintenanceMessage
+		}
+		_ = json.NewEncoder(w).Encode(payload)
+	}
+	r.Get("/maintenance", maintenanceHandler)
+	r.Get("/api/v1/maintenance", maintenanceHandler)
+
+	// Public webhooks — no JWT required
+	r.Post("/webhooks/hub2", webhookH.HUB2)
+	r.Post("/webhooks/metamap", kycH.MetaMapWebhook)
+	r.Post("/webhooks/kyc", kycH.ProviderWebhook)
+	r.Post("/webhooks/didit", kycH.ProviderWebhook)
+	r.Post("/webhooks/payments", paymentsWebhookH.Receive)
+	r.Post("/webhooks/caas", caasWebhookH.Receive)
+	r.Post("/webhooks/nomba", nombaWebhookH.Receive)
+	r.Post("/webhooks/nilos", nilosWebhookH.Receive)
+
+	r.Post("/api/v1/webhooks/kyc", kycH.ProviderWebhook)
+	r.Post("/api/v1/webhooks/didit", kycH.ProviderWebhook)
+
+	// Swagger UI
+	r.Get("/swagger/*", httpSwagger.Handler(
+		httpSwagger.URL("/swagger/doc.json"),
+	))
+
+	// API v1
+	r.Route("/api/v1", func(r chi.Router) {
+
+		// ── Public routes (no auth) ──────────────────────────────────────────
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/otp/send", authH.SendOTP)
+			r.Post("/otp/verify", authH.VerifyOTP)
+			r.Post("/register", authH.Register)
+			r.Post("/login", authH.Login)
+			r.Post("/2fa/login", authH.CompleteTOTPLogin)
+			r.Post("/google", authH.GoogleSignIn)
+			r.Post("/token/refresh", authH.RefreshToken)
+			r.Post("/forgot-pin", authH.ForgotPIN)
+			r.Post("/reset-pin", authH.ResetPIN)
+			// Public email-verification resend (pre-auth "check your email" screen)
+			r.Post("/email/resend", authH.ResendEmailVerification)
+		})
+
+		// Support links — public (no auth needed for privacy policy / help center URLs)
+		r.Get("/support/links", supportH.GetAppLinks)
+
+		// Market data
+		r.Get("/market/prices", marketH.GetPrices)
+		r.Get("/market/prices/{symbol}", marketH.GetPrice)
+		r.Get("/market/ws", marketH.WSHandler)
+
+		// ─── Protected routes (JWT required) ──────────────────────────────────
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Auth(cfg.JWT.Secret))
+
+			// Auth — session & email management
+			r.Post("/auth/logout", authH.Logout)
+			r.Post("/auth/email/resend-otp", authH.SendEmailOTP)
+			r.Post("/auth/email/verify", authH.VerifyEmail)
+			r.Get("/auth/devices", authH.ListDevices)
+			r.Delete("/auth/devices", authH.DisconnectAllDevices)
+			r.Delete("/auth/devices/{id}", authH.DisconnectDevice)
+
+			// Profile
+			r.Get("/profile", profileH.GetProfile)
+			r.Patch("/profile", profileH.UpdateProfile)
+			r.Get("/profile/preferences", prefsH.Get)
+			r.Patch("/profile/preferences", prefsH.Update)
+
+			// Security — 2FA, PIN change, biometrics
+			r.Get("/security", securityH.GetStatus)
+			r.Post("/security/2fa/setup", securityH.Setup2FA)
+			r.Post("/security/2fa/confirm", securityH.Confirm2FA)
+			r.Delete("/security/2fa", securityH.Disable2FA)
+			r.Post("/security/pin/change", securityH.ChangePIN)
+			r.Post("/security/biometrics/enable", securityH.EnableBiometrics)
+			r.Delete("/security/biometrics", securityH.DisableBiometrics)
+
+			// Support — FAQs and tickets
+			r.Get("/support/faqs", supportH.ListFAQs)
+			r.Post("/support/tickets", supportH.CreateTicket)
+			r.Get("/support/tickets", supportH.ListTickets)
+			r.Get("/support/tickets/{id}", supportH.GetTicket)
+			r.Post("/support/tickets/{id}/messages", supportH.ReplyToTicket)
+
+			// KYC (status + doc upload available pre-approval; metamap init too)
+			r.Route("/kyc", func(r chi.Router) {
+				r.Get("/status", kycH.GetStatus)
+				r.Get("/requirements", kycH.IntakeRequirements) // fields to collect before Sumsub (+ saved values)
+				r.Put("/intake/draft", kycH.SaveDraft)          // save partial progress (resume)
+				r.Post("/intake", kycH.SubmitIntake)            // submit our own KYC fields first
+				r.Get("/documents", kycH.ListDocuments)
+				r.Post("/documents", kycH.UploadDocument)
+				r.Post("/init", kycH.Initiate) // Generic KYC (Didit / Sumsub) — gated on intake
+				r.Post("/metamap/init", kycH.InitiateMetaMap)
+			})
+
+			// Business profile + KYB (available pre-approval — directors and
+			// documents are completed after signup)
+			r.Route("/business", func(r chi.Router) {
+				r.Get("/profile", businessH.GetProfile)
+				r.Put("/profile", businessH.SaveProfile)
+				r.Get("/kyc-status", businessH.GetKYCStatus)
+				r.Get("/directors", businessH.ListDirectors)
+				r.Post("/directors", businessH.AddDirector)
+				r.Delete("/directors/{id}", businessH.DeleteDirector)
+				// Enriched analytics — business-tier only (403 otherwise).
+				r.Get("/analytics", businessH.GetAnalytics)
+			})
+
+			// Team management (merchant staff)
+			r.Route("/team", func(r chi.Router) {
+				r.Use(middleware.LoadMerchantContext(pool))
+				r.Get("/", teamH.ListMembers)
+				r.Get("/roles-permissions", teamH.GetRolesPermissions)
+				r.Post("/accept-invite", teamH.AcceptInvite)
+				r.With(middleware.RequireMerchantRole("admin")).
+					Post("/invite", teamH.InviteMember)
+				r.With(middleware.RequireMerchantRole("admin")).
+					Put("/{id}/role", teamH.UpdateMemberRole)
+				r.With(middleware.RequireMerchantRole("admin")).
+					Delete("/{id}", teamH.RemoveMember)
+			})
+
+			// Referrals & points
+			r.Get("/referrals", referralH.GetReferralData)
+			r.Get("/referrals/points/ledger", referralH.GetPointsHistory)
+
+			// Swap — token discovery and price quotes are available pre-KYC so
+			// users can browse and preview prices before verifying.
+			r.Get("/swap/tokens", swapH.GetTokens)
+			r.Get("/swap/quote", swapH.GetQuote)
+
+			// Uploads (KYC documents, avatars, …) — available pre-KYC because
+			// users upload their documents in order to complete verification.
+			r.Post("/uploads", uploadH.Upload)
+			r.Get("/uploads/read-url", uploadH.GetReadURL)
+
+			// Account limits + usage (tier-aware: individual vs business).
+			// Available pre-KYC so the frontend can show caps during onboarding.
+			r.Get("/account/limits", limitsH.GetLimits)
+
+			// ── KYC-gated financial routes ───────────────────────────────────
+			r.Group(func(r chi.Router) {
+				r.Use(kycRequired)
+
+				// Accounts (fiat — XAF, XOF, USD, GBP, EUR)
+				r.Route("/accounts", func(r chi.Router) {
+					r.Get("/", accountH.ListAccounts)
+					r.Get("/{currency}", accountH.GetAccount)
+					r.Get("/{currency}/transactions", accountH.GetTransactions)
+					r.Get("/{currency}/transactions/{id}", accountH.GetTransaction)
+				})
+
+				// WaaS — Rach Wallet-as-a-Service (HD crypto wallets, on-chain).
+				// NOTE: /wallets/deposit + /wallets/withdraw are HUB2 Mobile Money
+				// (tagged separately in swagger); the rest are the WaaS surface.
+				r.Route("/wallets", func(r chi.Router) {
+					r.Get("/", walletH.ListWallets)
+					r.Post("/", walletH.CreateWallet)
+					r.Get("/{walletId}/address", walletH.GetDepositAddress)
+					r.Get("/addresses", walletH.ListAddresses)          // balances (native + tokens)
+					r.Get("/transactions", walletH.GetWaasTransactions) // on-chain history
+					r.Post("/transfer", walletH.TransferCrypto)         // send on-chain
+					r.Post("/estimate-gas", walletH.EstimateGas)
+					r.Get("/seed", walletH.RevealSeed)              // sensitive
+					r.Post("/export-key", walletH.ExportPrivateKey) // sensitive
+					r.Post("/deposit", walletH.InitiateDeposit)     // HUB2 mobile money
+					r.Post("/withdraw", walletH.InitiateWithdrawal) // HUB2 mobile money
+					// Legacy aliases → the unified Rach crypto swap handler.
+					// Kept for backward compatibility (existing mobile clients);
+					// /swap/* is the canonical, documented surface. Both accept the
+					// old base-unit `amount_in` and the new human `amount`/symbols.
+					r.Get("/swap/quote", swapH.GetQuote)
+					r.Post("/swap/execute", swapH.Execute)
+					r.Get("/swap/history", swapH.GetHistory)
+				})
+
+				// Rach unified swap (symbols, human amounts, best-price routing).
+				// Execution runs on the user's WaaS wallet; requires KYC.
+				r.Post("/swap/execute", swapH.Execute)
+				r.Get("/swap/history", swapH.GetHistory)
+
+				// CaaS — Instant USD Account (ERC-4337 SCW)
+				r.Route("/crypto", func(r chi.Router) {
+					r.Get("/wallet", caasH.GetWallet)
+					r.Post("/fund", caasH.FundAccount)
+					r.Get("/balances", caasH.GetBalances)
+					r.Post("/send", caasH.Send)
+					r.Post("/withdraw", caasH.Withdraw)
+					r.Get("/transactions", caasH.ListTransactions)
+					r.Get("/transactions/{id}", caasH.GetTransaction)
+					// Stablecoin swap (USDC ⇄ USDT) on the user's SCW via CaaS.
+					r.Post("/swaps", caasH.Swap)
+					r.Get("/swaps", caasH.ListSwaps)
+					r.Get("/swaps/{id}", caasH.GetSwap)
+				})
+
+				// Manual mobile money (parallel to Hub2): pay the business numbers
+				// out-of-band and claim it; cash out to a momo number. Admin confirms.
+				r.Route("/momo", func(r chi.Router) {
+					r.Get("/accounts", momoH.ListMomoAccounts)
+					r.Post("/deposits", momoH.SubmitDeposit)
+					r.Get("/deposits", momoH.ListMyDeposits)
+					r.Post("/withdrawals", momoH.RequestWithdrawal)
+					r.Get("/withdrawals", momoH.ListMyWithdrawals)
+				})
+
+				// Transfers (fiat internal)
+				r.Route("/transfers", func(r chi.Router) {
+					r.Post("/internal", transferH.InternalTransfer)
+					r.Post("/hub2", transferH.Hub2Payment)
+					r.Post("/exchange", transferH.ExchangeCurrency)
+				})
+
+				// ── Nigerian NGN helpers (Nomba) ────────────────────────────
+				// Bank list + account name-enquiry (the "account check" done
+				// before an NGN transfer). The transfer itself goes through the
+				// fiat withdrawal flow (POST /withdrawals with source NGN + bank_code).
+				r.Get("/nomba/banks", nombaH.ListBanks)
+				r.Get("/nomba/resolve-account", nombaH.ResolveAccount)
+
+				// Dashboard + activity feed + insights
+				r.Get("/dashboard", dashboardH.GetDashboard)
+				r.Get("/activity", activityH.GetFeed)
+				r.Get("/insights", insightsH.GetInsights)
+				r.Get("/crypto/contacts", dashboardH.GetRecentContacts)
+
+				// Currency rates (buy / sell / standard per currency) — read-only
+				// for customers: standard rate to display balances, buy/sell for
+				// asset purchase/sale. Admin manages them under /admin/currency-rates.
+				r.Get("/rates", ratesH.ListRates)
+				r.Get("/rates/{currency}", ratesH.GetRate)
+
+				// ── Exchange ────────────────────────────────────────────────
+				r.Get("/exchange/rate", exchangeH.GetRate)
+				r.Post("/exchange/quote", exchangeH.GetQuote)
+				r.Post("/exchange/execute", exchangeH.Execute)
+				r.Get("/exchange/history", exchangeH.GetHistory)
+
+				// ── Wallet overview + detail ────────────────────────────────
+				r.Get("/wallets/overview", walletOverviewH.GetOverview)
+				r.Get("/wallets/supported-assets", walletOverviewH.GetSupportedAssets)
+				r.Get("/wallets/fiat/{currency}", walletOverviewH.GetFiatWalletDetail)
+				r.Get("/wallets/fiat/{currency}/transactions", walletOverviewH.GetFiatTransactions)
+				r.Get("/wallets/crypto/{network}", walletOverviewH.GetCryptoWalletDetail)
+				r.Get("/wallets/crypto/{network}/transactions", walletOverviewH.GetCryptoTransactions)
+				r.Get("/wallets/stablecoin/{symbol}", walletOverviewH.GetStablecoinDetail)
+				r.Get("/wallets/stablecoin/{symbol}/transactions", walletOverviewH.GetStablecoinTransactions)
+
+				// Fiat withdrawals (Nilos-backed accounts → bank or mobile money)
+				r.Post("/withdrawals/quote", withdrawalH.Quote)
+				r.Post("/withdrawals", withdrawalH.Initiate)
+				r.Get("/withdrawals", withdrawalH.List)
+				r.Get("/withdrawals/{id}", withdrawalH.Get)
+				r.Get("/withdrawals/beneficiaries", withdrawalH.ListBeneficiaries)
+				r.Post("/withdrawals/beneficiaries", withdrawalH.SaveBeneficiary)
+				r.Delete("/withdrawals/beneficiaries/{id}", withdrawalH.DeleteBeneficiary)
+
+				// Virtual Cards
+				r.Route("/cards", func(r chi.Router) {
+					r.Get("/", cardsH.ListCards)
+					r.Post("/", cardsH.CreateCard)
+					r.Patch("/{id}", cardsH.UpdateCard)
+				})
+
+				// VTU & Bills
+				r.Route("/vtu", func(r chi.Router) {
+					r.Get("/transactions", vtuH.ListVTUTransactions)
+					r.Post("/airtime", vtuH.PurchaseAirtime)
+					r.Post("/data", vtuH.PurchaseData)
+					r.Post("/bills/pay", vtuH.PayBill)
+				})
+			})
+
+			// Notifications (no KYC gate — available from day 1)
+			r.Get("/notifications", notificationH.List)
+			r.Get("/notifications/unread-count", notificationH.UnreadCount)
+			r.Patch("/notifications/read-all", notificationH.MarkAllRead)
+			r.Patch("/notifications/{id}/read", notificationH.MarkRead)
+			// Push notifications — device (FCM token) registration + test
+			r.Post("/notifications/devices", notificationH.RegisterDevice)
+			r.Delete("/notifications/devices", notificationH.UnregisterDevice)
+			r.Post("/notifications/test-push", notificationH.TestPush)
+
+			// ── Admin routes (JWT + staff permission check) ──────────────────
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.LoadStaffPermissions(pool))
+
+				// Dashboard + audit
+				r.With(middleware.RequirePermission(services.PermAnalyticsView)).
+					Get("/admin/dashboard", adminUsersH.AdminDashboard)
+				r.With(middleware.RequirePermission(services.PermAuditView)).
+					Get("/admin/audit-log", adminStaffH.GetAuditLog)
+
+				// Staff — accept invite (any authenticated staff, no extra permission)
+				r.Post("/admin/staff/invite/accept", adminStaffH.AcceptInvite)
+
+				// Staff CRUD
+				r.With(middleware.RequirePermission(services.PermStaffInvite)).
+					Post("/admin/staff/invite", adminStaffH.InviteStaff)
+				r.With(middleware.RequirePermission(services.PermStaffView)).
+					Get("/admin/staff", adminStaffH.ListStaff)
+				r.With(middleware.RequirePermission(services.PermStaffView)).
+					Get("/admin/staff/{id}", adminStaffH.GetStaff)
+				r.With(middleware.RequirePermission(services.PermStaffUpdate)).
+					Patch("/admin/staff/{id}", adminStaffH.UpdateStaff)
+				r.With(middleware.RequirePermission(services.PermStaffUpdate)).
+					Put("/admin/staff/{id}/department", adminStaffH.SetStaffDepartment)
+				r.With(middleware.RequirePermission(services.PermStaffDisable)).
+					Post("/admin/staff/{id}/disable", adminStaffH.DisableStaff)
+				r.With(middleware.RequirePermission(services.PermStaffDisable)).
+					Post("/admin/staff/{id}/enable", adminStaffH.EnableStaff)
+				r.With(middleware.RequirePermission(services.PermStaffInvite)).
+					Post("/admin/staff/{id}/resend-invite", adminStaffH.ResendInvite)
+				r.With(middleware.RequirePermission(services.PermStaffRemove)).
+					Post("/admin/staff/{id}/revoke", adminStaffH.RevokeInvite)
+				r.With(middleware.RequirePermission(services.PermStaffRemove)).
+					Delete("/admin/staff/{id}", adminStaffH.RemoveStaff)
+
+				// Departments (team org units)
+				r.With(middleware.RequirePermission(services.PermDepartmentsView)).
+					Get("/admin/departments", adminDeptH.ListDepartments)
+				r.With(middleware.RequirePermission(services.PermDepartmentsView)).
+					Get("/admin/departments/{id}", adminDeptH.GetDepartment)
+				r.With(middleware.RequirePermission(services.PermDepartmentsManage)).
+					Post("/admin/departments", adminDeptH.CreateDepartment)
+				r.With(middleware.RequirePermission(services.PermDepartmentsManage)).
+					Patch("/admin/departments/{id}", adminDeptH.UpdateDepartment)
+				r.With(middleware.RequirePermission(services.PermDepartmentsManage)).
+					Delete("/admin/departments/{id}", adminDeptH.DeleteDepartment)
+
+				// Roles + permission catalogue (read-only)
+				r.With(middleware.RequirePermission(services.PermRolesView)).
+					Get("/admin/roles", adminStaffH.ListRoles)
+				r.With(middleware.RequirePermission(services.PermRolesView)).
+					Get("/admin/roles/{name}", adminStaffH.GetRolePermissions)
+				r.With(middleware.RequirePermission(services.PermRolesView)).
+					Get("/admin/permissions", adminStaffH.ListPermissions)
+
+				// User management
+				r.With(middleware.RequirePermission(services.PermUsersView)).
+					Get("/admin/users", adminUsersH.ListUsers)
+				r.With(middleware.RequirePermission(services.PermUsersView)).
+					Get("/admin/users/{id}", adminUsersH.GetUser)
+				r.With(middleware.RequirePermission(services.PermUsersDisable)).
+					Post("/admin/users/{id}/disable", adminUsersH.DisableUser)
+				r.With(middleware.RequirePermission(services.PermUsersEnable)).
+					Post("/admin/users/{id}/enable", adminUsersH.EnableUser)
+				r.With(middleware.RequirePermission(services.PermUsersDelete)).
+					Delete("/admin/users/{id}", adminUsersH.DeleteUser)
+				r.With(middleware.RequirePermission(services.PermUsersResetKYC)).
+					Post("/admin/users/{id}/kyc/reset", adminUsersH.ResetUserKYC)
+				r.With(middleware.RequirePermission(services.PermUsersManage)).
+					Post("/admin/users/{id}/reprovision-fiat", adminUsersH.ReprovisionFiat)
+				r.With(middleware.RequirePermission(services.PermTxView)).
+					Get("/admin/users/{id}/transactions", adminUsersH.ListUserTransactions)
+
+				// Customer banking / ledger accounts (all currencies)
+				r.With(middleware.RequirePermission(services.PermAccountsView)).
+					Get("/admin/customers/{id}/accounts", adminAccountsH.ListCustomerAccounts)
+				r.With(middleware.RequirePermission(services.PermAccountsBanking)).
+					Patch("/admin/customers/{id}/accounts/{currency}/banking", adminAccountsH.UpdateBanking)
+				r.With(middleware.RequirePermission(services.PermAccountsStatus)).
+					Post("/admin/customers/{id}/accounts/{currency}/status", adminAccountsH.SetAccountStatus)
+				r.With(middleware.RequirePermission(services.PermAccountsBalance)).
+					Post("/admin/customers/{id}/accounts/{currency}/balance", adminAccountsH.ChangeBalance)
+
+				// Per-user account type + limit overrides (granular control)
+				r.With(middleware.RequirePermission(services.PermUsersManage)).
+					Post("/admin/users/{id}/account-type", adminLimitsH.SetUserAccountType)
+				r.With(middleware.RequirePermission(services.PermLimitsView)).
+					Get("/admin/users/{id}/limits", adminLimitsH.GetUserLimits)
+				r.With(middleware.RequirePermission(services.PermLimitsManage)).
+					Put("/admin/users/{id}/limits", adminLimitsH.SetUserLimits)
+				r.With(middleware.RequirePermission(services.PermLimitsManage)).
+					Delete("/admin/users/{id}/limits", adminLimitsH.ClearUserLimits)
+
+				// Manual mobile money: collection numbers + deposit/cash-out review
+				r.With(middleware.RequirePermission(services.PermMomoView)).
+					Get("/admin/momo/accounts", adminMomoH.ListMomoAccounts)
+				r.With(middleware.RequirePermission(services.PermMomoManage)).
+					Post("/admin/momo/accounts", adminMomoH.CreateMomoAccount)
+				r.With(middleware.RequirePermission(services.PermMomoManage)).
+					Put("/admin/momo/accounts/{id}", adminMomoH.UpdateMomoAccount)
+				r.With(middleware.RequirePermission(services.PermMomoManage)).
+					Delete("/admin/momo/accounts/{id}", adminMomoH.DeleteMomoAccount)
+				r.With(middleware.RequirePermission(services.PermMomoView)).
+					Get("/admin/momo/deposits", adminMomoH.ListDeposits)
+				r.With(middleware.RequirePermission(services.PermMomoDeposits)).
+					Post("/admin/momo/deposits/{id}/confirm", adminMomoH.ConfirmDeposit)
+				r.With(middleware.RequirePermission(services.PermMomoDeposits)).
+					Post("/admin/momo/deposits/{id}/reject", adminMomoH.RejectDeposit)
+				r.With(middleware.RequirePermission(services.PermMomoView)).
+					Get("/admin/momo/withdrawals", adminMomoH.ListWithdrawals)
+				r.With(middleware.RequirePermission(services.PermMomoWithdrawals)).
+					Post("/admin/momo/withdrawals/{id}/complete", adminMomoH.CompleteWithdrawal)
+				r.With(middleware.RequirePermission(services.PermMomoWithdrawals)).
+					Post("/admin/momo/withdrawals/{id}/reject", adminMomoH.RejectWithdrawal)
+
+				// KYC review
+				r.With(middleware.RequirePermission(services.PermKYCView)).
+					Get("/admin/kyc/pending", adminH.ListPendingKYC)
+				r.With(middleware.RequirePermission(services.PermKYCView)).
+					Get("/admin/kyc/{id}", adminH.GetKYCReview)
+				r.With(middleware.RequirePermission(services.PermKYCApprove)).
+					Post("/admin/kyc/{id}/approve", adminH.ApproveKYC)
+				r.With(middleware.RequirePermission(services.PermKYCReject)).
+					Post("/admin/kyc/{id}/reject", adminH.RejectKYC)
+				// Hybrid KYC: hand automated control back to the provider.
+				r.With(middleware.RequirePermission(services.PermKYCApprove)).
+					Post("/admin/kyc/{id}/release", adminH.ReleaseKYCToProvider)
+
+				// Treasury reconciliation (NGN: Nomba wallet vs ledger)
+				r.With(middleware.RequirePermission(services.PermAnalyticsView)).
+					Get("/admin/reconciliation/nomba", adminH.GetNombaReconciliation)
+
+				// Withdrawal rates
+				r.With(middleware.RequirePermission(services.PermWithdrawalsRates)).
+					Post("/admin/withdrawal-rates", adminH.SetWithdrawalRate)
+				r.With(middleware.RequirePermission(services.PermWithdrawalsView)).
+					Get("/admin/withdrawal-rates", adminH.ListWithdrawalRates)
+
+				// Currency rates (buy / sell / standard per currency)
+				r.With(middleware.RequirePermission(services.PermRatesView)).
+					Get("/admin/currency-rates", ratesH.AdminListRates)
+				r.With(middleware.RequirePermission(services.PermRatesManage)).
+					Put("/admin/currency-rates/{currency}", ratesH.AdminSetRate)
+
+				// Account-tier limits (platform-wide, admin-editable)
+				r.With(middleware.RequirePermission(services.PermLimitsView)).
+					Get("/admin/limits", adminLimitsH.ListTierLimits)
+				r.With(middleware.RequirePermission(services.PermLimitsManage)).
+					Patch("/admin/limits/{tier}", adminLimitsH.UpdateTierLimits)
+			})
+		})
+	})
+
+	return r
+}
