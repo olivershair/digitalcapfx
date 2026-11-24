@@ -13,6 +13,8 @@ interface ComplianceDocumentsStepProps {
   onDocumentUploadComplete: (docKey: string, fileUrl: string) => Promise<void>;
   onProceedToBiometrics: () => void;
   onBackToFields: () => void;
+  /** Overrides the "proceed" button label (manual KYC: go to submission). */
+  proceedLabel?: string;
 }
 
 export const ComplianceDocumentsStep: React.FC<ComplianceDocumentsStepProps> = ({
@@ -22,6 +24,7 @@ export const ComplianceDocumentsStep: React.FC<ComplianceDocumentsStepProps> = (
   onDocumentUploadComplete,
   onProceedToBiometrics,
   onBackToFields,
+  proceedLabel,
 }) => {
   const { t } = useLanguageStore();
 
@@ -108,7 +111,7 @@ export const ComplianceDocumentsStep: React.FC<ComplianceDocumentsStepProps> = (
             className="rounded-xl text-xs font-bold px-6 h-11 bg-cyan-500 hover:bg-cyan-400 text-white"
             rightIcon={<ArrowRight className="h-4 w-4" />}
           >
-            {t('settings.verification.step2.proceedToBiometrics')}
+            {proceedLabel || t('settings.verification.step2.proceedToBiometrics')}
           </Button>
         </div>
       </div>

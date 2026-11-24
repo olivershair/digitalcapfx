@@ -115,7 +115,14 @@ func (h *KYCHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 		DocURL:  body.DocURL,
 	})
 	if err != nil {
-		response.InternalError(w)
+		switch {
+		case errors.Is(err, services.ErrKYCDocumentNotOwned):
+			response.BadRequest(w, "INVALID_DOCUMENT", err.Error())
+		case errors.Is(err, services.ErrKYCFileLocked):
+			response.Conflict(w, "KYC_FILE_LOCKED", err.Error())
+		default:
+			response.InternalError(w)
+		}
 		return
 	}
 
@@ -128,6 +135,19 @@ type KYCInitResponse struct {
 	Flow  string `json:"flow" example:"id-and-liveness"`           // provider level / flow name
 }
 
+// KYCManualSubmitResponse is returned by POST /kyc/init in manual mode.
+type KYCManualSubmitResponse struct {
+	Mode    string `json:"mode" example:"manual"`
+	Status  string `json:"status" example:"under_review"` // under_review | approved
+	Message string `json:"message"`
+}
+
+// KYCMissingDocument is one entry of the KYC_DOCUMENTS_MISSING error data.
+type KYCMissingDocument struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
 // Initiate godoc
 //
 //	@Summary      Start or resume KYC verification
@@ -136,10 +156,14 @@ type KYCInitResponse struct {
 //	@Description  For Didit the response `token` is the per-user hosted verification URL — open it in an iframe, a new tab, or the web SDK. The session is bound to this user via `vendor_data`, which is what lets the decision webhook be attributed back; there is no shared fallback link, so if a session cannot be minted this endpoint FAILS rather than returning something unusable. For Sumsub the `token` is a short-lived (~30 min) SDK access token and `flow` is the level name.
 //	@Description
 //	@Description  The decision itself arrives asynchronously at `POST /webhooks/kyc` and is the only source of truth — never treat the client-side completion callback as proof of approval.
+//	@Description
+//	@Description  **Manual mode (`KYC_PROVIDER=manual`)**: no vendor session. This call SUBMITS the customer's file for staff review once every required document (incl. `id_document` and `selfie_with_id`) is uploaded; it returns `{mode:"manual", status:"under_review"}`, or 400 `KYC_DOCUMENTS_MISSING` with the list of missing documents. Staff then decide via POST /admin/kyc/{id}/approve or /reject; a rejection lets the customer fix and resubmit.
 //	@Tags         kyc
 //	@Produce      json
 //	@Security     BearerAuth
 //	@Success      200  {object}  KYCInitResponse
+//	@Success      202  {object}  KYCManualSubmitResponse  "manual mode"
+//	@Failure      400  {object}  ErrorResponse  "KYC_INTAKE_REQUIRED / KYC_DOCUMENTS_MISSING"
 //	@Failure      401  {object}  ErrorResponse
 //	@Failure      500  {object}  ErrorResponse
 //	@Router       /kyc/init [post]
@@ -158,7 +182,33 @@ func (h *KYCHandler) Initiate(w http.ResponseWriter, r *http.Request) {
 			response.BadRequest(w, "KYC_INTAKE_REQUIRED", err.Error())
 			return
 		}
+		var missing *services.KYCDocumentsMissingError
+		if errors.As(err, &missing) {
+			list := make([]KYCMissingDocument, 0, len(missing.Missing))
+			for _, d := range missing.Missing {
+				list = append(list, KYCMissingDocument{Key: d.Key, Label: d.Label})
+			}
+			response.JSON(w, http.StatusBadRequest, response.Envelope{
+				Success: false,
+				Error:   &response.Error{Code: "KYC_DOCUMENTS_MISSING", Message: missing.Error()},
+				Data:    map[string]any{"missing_documents": list},
+			})
+			return
+		}
 		response.InternalError(w)
+		return
+	}
+
+	if h.svc.KYC.ManualMode() {
+		msg := "your file has been submitted — our compliance team will review it and notify you of the decision"
+		if result.Status == "approved" {
+			msg = "your identity is already verified"
+		}
+		response.JSON(w, http.StatusAccepted, response.Envelope{
+			Success: true,
+			Message: msg,
+			Data:    KYCManualSubmitResponse{Mode: "manual", Status: result.Status, Message: msg},
+		})
 		return
 	}
 
@@ -380,7 +430,7 @@ func (h *KYCHandler) InitiateMetaMap(w http.ResponseWriter, r *http.Request) {
 // MetaMapWebhook godoc
 //
 //	@Summary      MetaMap verification webhook
-//	@Description  Receives verification result events from MetaMap. Updates KYC status to approved or rejected.
+//	@Description  Receives verification result events from MetaMap. Header `X-Signature` must be the hex HMAC-SHA256 of the raw body keyed with METAMAP_WEBHOOK_SECRET; without a configured secret every delivery is refused (503 WEBHOOK_SECRET_MISSING).
 //	@Tags         webhooks
 //	@Accept       json
 //	@Produce      json
@@ -388,8 +438,23 @@ func (h *KYCHandler) InitiateMetaMap(w http.ResponseWriter, r *http.Request) {
 //	@Failure      400  {object}  ErrorResponse
 //	@Router       /webhooks/metamap [post]
 func (h *KYCHandler) MetaMapWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		response.BadRequest(w, "READ_ERROR", "failed to read request body")
+		return
+	}
+	// SECURITY: verify the signature before trusting anything in the body.
+	if err := h.svc.KYC.VerifyMetaMapWebhook(body, r.Header); err != nil {
+		if errors.Is(err, services.ErrWebhookNotConfigured) {
+			response.WebhookSecretMissing(w, "metamap", "METAMAP_WEBHOOK_SECRET")
+			return
+		}
+		response.WebhookSignatureInvalid(w, "metamap", "X-Signature", "METAMAP_WEBHOOK_SECRET")
+		return
+	}
+
 	var payload metamap.WebhookPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		response.BadRequest(w, "INVALID_PAYLOAD", "invalid webhook payload")
 		return
 	}

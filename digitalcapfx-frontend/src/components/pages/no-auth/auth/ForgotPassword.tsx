@@ -16,8 +16,10 @@ import { useFormErrors } from '@/hooks/useFormErrors'
 import { toast } from 'sonner'
 import { isValidPhoneNumber } from 'react-phone-number-input'
 import { useLanguageStore } from '@/store/languageStore'
+import { smsErrorMessage } from '@/lib/smsErrors'
+import { apiErrorMessage } from '@/lib/apiErrors'
 const ForgotPassword = () => {
-    const { t } = useLanguageStore();
+    const { t, language } = useLanguageStore();
     const router = useRouter();
     const [activeTab, setActiveTab] = useState<'email' | 'phone'>('phone');
     const usePhone = activeTab === 'phone';
@@ -39,23 +41,23 @@ const ForgotPassword = () => {
         mutationFn: (emailOrPhone: string) => authService.forgotPin(emailOrPhone),
         onSuccess: (data) => {
             if (data?.success) {
-                toast.success('A reset code has been sent to your registered contact.');
+                toast.success(t('messages.reset.codeSent'));
                 setStep('reset');
             } else {
-                const rawError = data?.error;
-                const msg = typeof rawError === 'object'
-                    ? (rawError.message || JSON.stringify(rawError))
-                    : (rawError || 'Failed to request reset OTP.');
+                const msg = apiErrorMessage(data, 'errors.action.requestReset');
                 setErrorMsg(msg);
                 toast.error(msg);
             }
         },
-        onError: (err: any) => {
+        onError: (err: any, target: string) => {
             console.error('Forgot PIN Error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object'
-                ? (rawError.message || JSON.stringify(rawError))
-                : (rawError || err.response?.data?.message || 'Failed to request verification code.');
+            const smsMsg = smsErrorMessage(err, target, t, language);
+            if (smsMsg) {
+                setErrorMsg(smsMsg);
+                toast.error(smsMsg);
+                return;
+            }
+            const msg = apiErrorMessage(err, 'errors.action.requestReset');
             setErrorMsg(msg);
             toast.error(msg);
         }
@@ -66,23 +68,17 @@ const ForgotPassword = () => {
             authService.resetPin(payload),
         onSuccess: (data) => {
             if (data?.success) {
-                toast.success('PIN reset successfully! Please sign in with your new PIN.');
+                toast.success(t('messages.reset.success'));
                 router.push('/login');
             } else {
-                const rawError = data?.error;
-                const msg = typeof rawError === 'object'
-                    ? (rawError.message || JSON.stringify(rawError))
-                    : (rawError || 'Reset PIN failed.');
+                const msg = apiErrorMessage(data, 'errors.action.resetPin');
                 setErrorMsg(msg);
                 toast.error(msg);
             }
         },
         onError: (err: any) => {
             console.error('Reset PIN Error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object'
-                ? (rawError.message || JSON.stringify(rawError))
-                : (rawError || err.response?.data?.message || 'Failed to reset PIN.');
+            const msg = apiErrorMessage(err, 'errors.action.resetPin');
             setErrorMsg(msg);
             toast.error(msg);
         }
@@ -94,11 +90,11 @@ const ForgotPassword = () => {
 
         if (usePhone) {
             if (!phone) {
-                setErrors({ phone: 'Phone number is required' });
+                setErrors({ phone: t('messages.validation.phoneRequired') });
                 return;
             }
             if (!isValidPhoneNumber(phone)) {
-                setErrors({ phone: 'Please enter a valid phone number' });
+                setErrors({ phone: t('messages.validation.phoneInvalid') });
                 return;
             }
             setErrors({});
@@ -107,12 +103,12 @@ const ForgotPassword = () => {
         } else {
             const trimmedEmail = email.trim();
             if (!trimmedEmail) {
-                setErrors({ email: 'Email address is required' });
+                setErrors({ email: t('messages.validation.emailRequired') });
                 return;
             }
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(trimmedEmail)) {
-                setErrors({ email: 'Please enter a valid email address' });
+                setErrors({ email: t('messages.validation.email') });
                 return;
             }
             setErrors({});
@@ -127,12 +123,12 @@ const ForgotPassword = () => {
 
         const newErrors: Record<string, string> = {};
         if (code.length !== 6) {
-            newErrors.code = 'Please enter the 6-digit verification code';
+            newErrors.code = t('messages.validation.code6');
         }
         if (!newPin.trim()) {
-            newErrors.newPin = 'New PIN is required';
+            newErrors.newPin = t('messages.validation.pinRequired');
         } else if (newPin.length !== 6) {
-            newErrors.newPin = 'New PIN must be exactly 6 digits';
+            newErrors.newPin = t('messages.validation.pinLength');
         }
 
         setErrors(newErrors);

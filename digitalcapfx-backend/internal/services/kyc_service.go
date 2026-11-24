@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +34,8 @@ type KYCService struct {
 	notif       *NotificationService
 	nilosClient *nilos.Client
 	nombaClient *nomba.Client
+	// uploads re-signs stored document objects for staff review (manual KYC).
+	uploads *UploadService
 }
 
 func NewKYCService(pool *pgxpool.Pool, cfg *config.Config, logger *zap.Logger, provider kyc.KYCProvider, emailClient *email.Client, notif *NotificationService, nilosClient *nilos.Client, nombaClient *nomba.Client) *KYCService {
@@ -59,6 +64,36 @@ type UploadDocumentInput struct {
 
 func (s *KYCService) UploadDocument(ctx context.Context, in UploadDocumentInput) (*db.KycDocument, error) {
 	q := db.New(s.pool)
+
+	// SECURITY: the reference must point to a file this customer uploaded —
+	// otherwise a customer could attach someone else's document to their file.
+	if s.uploads != nil {
+		if _, ok := s.uploads.OwnedObject(in.DocURL, in.UserID); !ok {
+			return nil, ErrKYCDocumentNotOwned
+		}
+	}
+
+	if s.ManualMode() {
+		user, err := q.GetUserByID(ctx, in.UserID)
+		if err != nil {
+			return nil, ErrUserNotFound
+		}
+		switch user.KycStatus {
+		case "submitted", "under_review", "processing", "approved":
+			return nil, ErrKYCFileLocked
+		}
+		// Manual mode: uploading does not queue the file — the explicit
+		// submission (POST /kyc/init) does, once every required document is in.
+		doc, err := q.CreateKYCDocument(ctx, db.CreateKYCDocumentParams{
+			UserID:  in.UserID,
+			DocType: in.DocType,
+			DocURL:  in.DocURL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create kyc document: %w", err)
+		}
+		return &doc, nil
+	}
 
 	doc, err := q.CreateKYCDocument(ctx, db.CreateKYCDocumentParams{
 		UserID:  in.UserID,
@@ -101,8 +136,14 @@ func (s *KYCService) InitiateKYC(ctx context.Context, userID uuid.UUID) (*kyc.Ve
 	// Gate: our own KYC intake must be SUBMITTED before the Sumsub SDK dialog is
 	// launched. This is what makes the frontend/mobile show our form first and
 	// only then pop the Sumsub flow.
-	if intake, ierr := q.GetKYCIntake(ctx, userID); ierr != nil || intake.Status != IntakeStatusSubmitted {
+	intake, ierr := q.GetKYCIntake(ctx, userID)
+	if ierr != nil || intake.Status != IntakeStatusSubmitted {
 		return nil, ErrKYCIntakeRequired
+	}
+
+	// Manual mode: no vendor session — queue the file for staff review.
+	if s.ManualMode() {
+		return s.submitManualReview(ctx, q, user, intake)
 	}
 
 	emailStr := ""
@@ -170,7 +211,26 @@ const (
 	DocProofOfWealth              = "proof_of_wealth" // UBO/director
 	DocIDDocument                 = "id_document"     // UBO/director
 	DocIDVLiveness                = "idv_liveness"    // 1 director, via Sumsub
+	// Manual mode (KYC_PROVIDER=manual) replaces the vendor ID + liveness check.
+	DocIDDocumentBack = "id_document_back" // back side of a national ID / driving licence
+	DocSelfieWithID   = "selfie_with_id"   // selfie holding the ID next to the face
 )
+
+// Verification modes reported to the app (drives the last step of the journey).
+const (
+	VerificationModeProvider = "provider" // vendor SDK (Didit / Sumsub / MetaMap)
+	VerificationModeManual   = "manual"   // ID + selfie uploads, staff decision
+)
+
+// manualIdentityDocuments are the identity proofs collected in manual mode,
+// in place of the vendor's ID scan + liveness check.
+func manualIdentityDocuments(scope string) []DocumentSpec {
+	return []DocumentSpec{
+		{Key: DocIDDocument, Label: "Government-issued ID (front)", Required: true, AppliesTo: "all", Scope: scope, Help: "National ID card, passport, driving licence or residence permit — valid (not expired), all four corners visible, text readable, no flash glare."},
+		{Key: DocIDDocumentBack, Label: "Government-issued ID (back)", Required: false, AppliesTo: "all", Scope: scope, Help: "Required for a national ID card, driving licence or residence permit. Not needed for a passport."},
+		{Key: DocSelfieWithID, Label: "Selfie holding your ID", Required: true, AppliesTo: "all", Scope: scope, Help: "A clear photo of your face holding the same ID next to it. Face and ID must both be readable; no filters, sunglasses or hat."},
+	}
+}
 
 // DocumentSpec describes a document the customer must upload (via POST
 // /kyc/documents). AppliesTo scopes conditional documents; Scope indicates
@@ -179,8 +239,8 @@ type DocumentSpec struct {
 	Key          string `json:"key"`
 	Label        string `json:"label"`
 	Required     bool   `json:"required"`
-	AppliesTo    string `json:"applies_to"`             // all | importers | eur_gbp_nre
-	Scope        string `json:"scope"`                  // company | director_ubo
+	AppliesTo    string `json:"applies_to"`               // all | importers | eur_gbp_nre
+	Scope        string `json:"scope"`                    // company | director_ubo
 	MaxAgeMonths int    `json:"max_age_months,omitempty"` // freshness requirement, if any
 	Help         string `json:"help,omitempty"`
 }
@@ -189,19 +249,21 @@ type DocumentSpec struct {
 type IntakeOptions struct {
 	IsImporter bool // adds the Proof of Imports document
 	NeedsNRE   bool // EUR/GBP non-resident-entity extras (counterparties, proof of wealth, contact)
+	Manual     bool // KYC_PROVIDER=manual: ID + selfie uploads instead of the vendor check
 }
 
 // IntakeRequirements is the full, account-type-aware checklist the frontend
 // renders: structured fields, document uploads, notes, plus any previously-saved
 // answers (for prefill/resume) and the intake status.
 type IntakeRequirements struct {
-	AccountType  string                 `json:"account_type"`
-	IntakeStatus string                 `json:"intake_status"` // not_started | draft | submitted
-	Completed    bool                   `json:"completed"`     // back-compat (== intake_status submitted)
-	Values       map[string]interface{} `json:"values"`        // saved answers, prefills the form
-	Fields       []IntakeFieldSpec      `json:"fields"`
-	Documents    []DocumentSpec         `json:"documents,omitempty"`
-	Notes        []string               `json:"notes,omitempty"`
+	AccountType      string                 `json:"account_type"`
+	VerificationMode string                 `json:"verification_mode"` // provider | manual
+	IntakeStatus     string                 `json:"intake_status"`     // not_started | draft | submitted
+	Completed        bool                   `json:"completed"`         // back-compat (== intake_status submitted)
+	Values           map[string]interface{} `json:"values"`            // saved answers, prefills the form
+	Fields           []IntakeFieldSpec      `json:"fields"`
+	Documents        []DocumentSpec         `json:"documents,omitempty"`
+	Notes            []string               `json:"notes,omitempty"`
 }
 
 // Intake + identity status constants.
@@ -248,16 +310,27 @@ func personIdentityFields() []IntakeFieldSpec {
 // merchant-onboarding document set, with extra items for importers and for
 // EUR/GBP non-resident entities (NRE).
 func BuildIntakeRequirements(accountType string, opts IntakeOptions) IntakeRequirements {
+	mode := VerificationModeProvider
+	if opts.Manual {
+		mode = VerificationModeManual
+	}
 	if accountType != "business" {
+		docs := []DocumentSpec{
+			{Key: DocProofOfAddress, Label: "Proof of Address", Required: false, AppliesTo: "all", Scope: "director_ubo", MaxAgeMonths: 3, Help: "Utility bill or bank statement, issued within the last 3 months"},
+		}
+		idNote := "Your ID document and liveness check are completed via the identity-verification dialog after this form."
+		if opts.Manual {
+			docs = append(manualIdentityDocuments("director_ubo"), docs...)
+			idNote = "Upload your ID and a selfie holding it, then submit your file: our compliance team reviews it manually (usually within 1 business day)."
+		}
 		return IntakeRequirements{
-			AccountType: accountType,
-			Fields:      personIdentityFields(),
-			Documents: []DocumentSpec{
-				{Key: DocProofOfAddress, Label: "Proof of Address", Required: false, AppliesTo: "all", Scope: "director_ubo", MaxAgeMonths: 3, Help: "Utility bill or bank statement, issued within the last 3 months"},
-			},
+			AccountType:      accountType,
+			VerificationMode: mode,
+			Fields:           personIdentityFields(),
+			Documents:        docs,
 			Notes: []string{
 				"Your name and country come from signup and are not re-collected here.",
-				"Your ID document and liveness check are completed via the identity-verification dialog after this form.",
+				idNote,
 				"BVN is optional. Provide it here to activate your Nigerian (NGN) account; without it, no NGN account is created.",
 			},
 		}
@@ -298,8 +371,16 @@ func BuildIntakeRequirements(accountType string, opts IntakeOptions) IntakeRequi
 		// UBOs & directors
 		{Key: DocIDDocument, Label: "Director/UBO ID Document", Required: true, AppliesTo: "all", Scope: "director_ubo", Help: "Passport, National ID, Residence permit, or Driver's license (for each natural-person shareholder)"},
 		{Key: DocProofOfAddress + "_ubo", Label: "Director/UBO Proof of Address", Required: true, AppliesTo: "all", Scope: "director_ubo", MaxAgeMonths: 3, Help: "Utility bill or bank statement, issued within the last 3 months"},
-		{Key: DocIDVLiveness, Label: "Director Liveness Check (IDV)", Required: true, AppliesTo: "all", Scope: "director_ubo", Help: "Required for one director. Completed via the identity-verification dialog after this form."},
 		{Key: DocProofOfWealth, Label: "Proof of Wealth (UBO/Director)", Required: opts.NeedsNRE, AppliesTo: "eur_gbp_nre", Scope: "director_ubo", Help: "Sale of asset, pay-slips, bank statements, or investment-account statements (required for EUR/GBP accounts)"},
+	}
+
+	if opts.Manual {
+		// No vendor liveness: one director provides the back of the ID and a
+		// selfie holding it (the front is the Director/UBO ID document above).
+		manual := manualIdentityDocuments("director_ubo")
+		docs = append(docs, manual[1], manual[2])
+	} else {
+		docs = append(docs, DocumentSpec{Key: DocIDVLiveness, Label: "Director Liveness Check (IDV)", Required: true, AppliesTo: "all", Scope: "director_ubo", Help: "Required for one director. Completed via the identity-verification dialog after this form."})
 	}
 
 	notes := []string{
@@ -313,12 +394,16 @@ func BuildIntakeRequirements(accountType string, opts IntakeOptions) IntakeRequi
 	if opts.NeedsNRE {
 		notes = append(notes, "EUR/GBP accounts (non-resident entity) require the top-3 counterparties, proof of wealth, and contact information.")
 	}
+	if opts.Manual {
+		notes = append(notes, "Once every required document is uploaded, submit your file: our compliance team reviews it manually.")
+	}
 
 	return IntakeRequirements{
-		AccountType: "business",
-		Fields:      fields,
-		Documents:   docs,
-		Notes:       notes,
+		AccountType:      "business",
+		VerificationMode: mode,
+		Fields:           fields,
+		Documents:        docs,
+		Notes:            notes,
 	}
 }
 
@@ -341,7 +426,7 @@ func (s *KYCService) IntakeRequirementsForUser(ctx context.Context, userID uuid.
 		return IntakeRequirements{}, ErrUserNotFound
 	}
 
-	opts := IntakeOptions{NeedsNRE: user.AccountType == "business"}
+	opts := IntakeOptions{NeedsNRE: user.AccountType == "business", Manual: s.ManualMode()}
 	intakeStatus := IntakeStatusNotStarted
 	var savedValues map[string]interface{}
 	if intake, ierr := q.GetKYCIntake(ctx, userID); ierr == nil {
@@ -581,10 +666,11 @@ type JourneyIdentity struct {
 }
 
 type JourneyStatus struct {
-	KycStatus string          `json:"kyc_status"` // back-compat: pending | approved | rejected
-	Stage     string          `json:"stage"`      // canonical (see computeKYCStage)
-	Intake    JourneyIntake   `json:"intake"`
-	Identity  JourneyIdentity `json:"identity"`
+	VerificationMode string          `json:"verification_mode"` // provider | manual
+	KycStatus        string          `json:"kyc_status"`        // back-compat: pending | approved | rejected
+	Stage            string          `json:"stage"`             // canonical (see computeKYCStage)
+	Intake           JourneyIntake   `json:"intake"`
+	Identity         JourneyIdentity `json:"identity"`
 }
 
 // GetJourneyStatus returns the consolidated KYC journey status the app switches on.
@@ -613,11 +699,16 @@ func (s *KYCService) GetJourneyStatus(ctx context.Context, userID uuid.UUID) (*J
 		}
 	}
 
+	mode := VerificationModeProvider
+	if s.ManualMode() {
+		mode = VerificationModeManual
+	}
 	return &JourneyStatus{
-		KycStatus: user.KycStatus,
-		Stage:     computeKYCStage(user.KycStatus, intakeStatus, identity.Status),
-		Intake:    JourneyIntake{Status: intakeStatus, SubmittedAt: submittedAt},
-		Identity:  identity,
+		VerificationMode: mode,
+		KycStatus:        user.KycStatus,
+		Stage:            computeKYCStage(user.KycStatus, intakeStatus, identity.Status),
+		Intake:           JourneyIntake{Status: intakeStatus, SubmittedAt: submittedAt},
+		Identity:         identity,
 	}, nil
 }
 
@@ -691,8 +782,10 @@ type AdminKYCReview struct {
 	KycProviderStatus *string             `json:"kyc_provider_status,omitempty"`
 	ManualOverride    bool                `json:"manual_override"`
 	IntakeCompleted   bool                `json:"intake_completed"`
+	VerificationMode  string              `json:"verification_mode"` // provider | manual
+	IdentityStatus    string              `json:"identity_status"`
 	Intake            *AdminKYCIntakeView `json:"intake"`
-	Documents         []db.KycDocument    `json:"documents"`
+	Documents         []AdminKYCDocument  `json:"documents"` // view_url: fresh 15-min link
 	BusinessProfile   *db.BusinessProfile `json:"business_profile,omitempty"`
 }
 
@@ -711,7 +804,15 @@ func (s *KYCService) AdminGetKYCReview(ctx context.Context, userID uuid.UUID) (*
 		KycStatus:         user.KycStatus,
 		KycProviderStatus: user.KycProviderStatus,
 		ManualOverride:    user.KycManualOverride,
-		Documents:         []db.KycDocument{},
+		VerificationMode:  VerificationModeProvider,
+		IdentityStatus:    IdentityNotStarted,
+		Documents:         []AdminKYCDocument{},
+	}
+	if s.ManualMode() {
+		review.VerificationMode = VerificationModeManual
+	}
+	if id, ierr := q.GetKYCIdentity(ctx, userID); ierr == nil {
+		review.IdentityStatus = id.Status
 	}
 
 	// Intake (nil if never submitted).
@@ -747,7 +848,7 @@ func (s *KYCService) AdminGetKYCReview(ctx context.Context, userID uuid.UUID) (*
 
 	// Uploaded documents.
 	if docs, derr := q.GetKYCDocumentsByUserID(ctx, userID); derr == nil && docs != nil {
-		review.Documents = docs
+		review.Documents = s.adminDocuments(userID, docs)
 	}
 
 	// Business profile (KYB), if any.
@@ -817,6 +918,31 @@ func (s *KYCService) InitiateMetaMapVerification(ctx context.Context, userID uui
 		FlowID:         record.FlowID,
 		Status:         record.Status,
 	}, nil
+}
+
+// ErrMetaMapWebhookSignature is returned when a MetaMap delivery is not signed
+// with METAMAP_WEBHOOK_SECRET.
+var ErrMetaMapWebhookSignature = errors.New("invalid metamap webhook signature")
+
+// VerifyMetaMapWebhook checks the X-Signature header (hex HMAC-SHA256 of the
+// raw body keyed with METAMAP_WEBHOOK_SECRET). SECURITY: fails closed —
+// returns ErrWebhookNotConfigured when no secret is set, so a forged event can
+// never change a customer's KYC status.
+func (s *KYCService) VerifyMetaMapWebhook(body []byte, headers http.Header) error {
+	secret := s.cfg.MetaMap.WebhookSecret
+	if secret == "" {
+		s.logger.Error("metamap webhook rejected: METAMAP_WEBHOOK_SECRET is not set")
+		return ErrWebhookNotConfigured
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	got := strings.TrimPrefix(strings.TrimSpace(headers.Get("X-Signature")), "sha256=")
+	if !hmac.Equal([]byte(strings.ToLower(got)), []byte(expected)) {
+		s.logger.Warn("metamap webhook signature verification failed")
+		return ErrMetaMapWebhookSignature
+	}
+	return nil
 }
 
 // HandleMetaMapWebhook processes a verification result pushed by MetaMap.
@@ -1095,7 +1221,6 @@ func (s *KYCService) notifyKYCRejected(ctx context.Context, user db.User, reason
 	})
 }
 
-
 // ─── Admin KYC Management ─────────────────────────────────────────────────────
 
 func (s *KYCService) ListPendingKYC(ctx context.Context) ([]db.UserFull, error) {
@@ -1119,6 +1244,7 @@ func (s *KYCService) AdminApproveKYC(ctx context.Context, userID, adminID uuid.U
 	if err := q.SetKycManualOverride(ctx, db.SetKycManualOverrideParams{ID: userID, KycManualOverride: true}); err != nil {
 		s.logger.Error("set kyc manual override", zap.Error(err))
 	}
+	s.markManualDecision(ctx, q, userID, true, "")
 
 	if _, err := q.RecordKycAdminAction(ctx, db.RecordKycAdminActionParams{
 		UserID:  userID,
@@ -1169,6 +1295,8 @@ func (s *KYCService) AdminRejectKYC(ctx context.Context, userID, adminID uuid.UU
 	if err := q.SetKycManualOverride(ctx, db.SetKycManualOverrideParams{ID: userID, KycManualOverride: true}); err != nil {
 		s.logger.Error("set kyc manual override", zap.Error(err))
 	}
+	// Manual mode: the customer may correct and resubmit their file.
+	s.markManualDecision(ctx, q, userID, false, reason)
 
 	reasonPtr := &reason
 	if _, err := q.RecordKycAdminAction(ctx, db.RecordKycAdminActionParams{

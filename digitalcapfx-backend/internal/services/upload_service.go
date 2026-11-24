@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -105,7 +106,41 @@ func (s *UploadService) Upload(ctx context.Context, userID uuid.UUID, purpose, f
 	return res, nil
 }
 
-// ReadURL returns a fresh signed read URL for an already-stored object.
+// ErrUploadForbidden is returned when a caller asks for an object that does
+// not belong to them.
+var ErrUploadForbidden = fmt.Errorf("object not found")
+
+// ReadURLForUser returns a signed read URL only if the object belongs to
+// userID. Objects are stored as "<purpose>/<user id>/<uuid>-<name>" (see
+// Upload), so ownership is the second path segment. Any other shape — "..",
+// absolute paths, another user's id, unknown prefix — is refused, so a
+// customer can never obtain another customer's KYC documents.
+func (s *UploadService) ReadURLForUser(userID uuid.UUID, object string, ttl time.Duration) (string, error) {
+	if s.store == nil {
+		return "", ErrUploadsDisabled
+	}
+	if !objectOwnedBy(object, userID) {
+		return "", ErrUploadForbidden
+	}
+	return s.ReadURL(object, ttl)
+}
+
+// objectOwnedBy reports whether object is a well-formed upload path owned by userID.
+func objectOwnedBy(object string, userID uuid.UUID) bool {
+	if object == "" || strings.Contains(object, "..") || strings.HasPrefix(object, "/") ||
+		strings.Contains(object, "\\") || path.Clean(object) != object {
+		return false
+	}
+	parts := strings.SplitN(object, "/", 3)
+	if len(parts) != 3 || parts[2] == "" {
+		return false
+	}
+	return validPurposes[parts[0]] && parts[1] == userID.String()
+}
+
+// ReadURL returns a fresh signed read URL for an already-stored object. It
+// performs NO ownership check — only call it from trusted code paths (e.g.
+// staff-only handlers); customer-facing handlers must use ReadURLForUser.
 func (s *UploadService) ReadURL(object string, ttl time.Duration) (string, error) {
 	if s.store == nil {
 		return "", ErrUploadsDisabled
@@ -114,4 +149,66 @@ func (s *UploadService) ReadURL(object string, ttl time.Duration) (string, error
 		ttl = maxSignedTTL
 	}
 	return s.store.SignedReadURL(object, ttl)
+}
+
+// objectFromReference extracts the bucket object path from a stored document
+// reference. Accepted forms: a bare object path ("kyc/<user>/<file>"),
+// "gs://<bucket>/<object>", or a (signed) HTTPS URL on storage.googleapis.com
+// in path style (/<bucket>/<object>) or virtual-host style
+// (<bucket>.storage.googleapis.com/<object>). When the service knows its
+// bucket, references to any other bucket are refused.
+func (s *UploadService) objectFromReference(ref string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", false
+	}
+	bucket := ""
+	if s.store != nil {
+		bucket = s.store.Bucket()
+	}
+	sameBucket := func(b string) bool { return bucket == "" || b == bucket }
+
+	switch {
+	case strings.HasPrefix(ref, "gs://"):
+		rest := strings.TrimPrefix(ref, "gs://")
+		b, obj, ok := strings.Cut(rest, "/")
+		if !ok || !sameBucket(b) {
+			return "", false
+		}
+		return obj, obj != ""
+	case strings.HasPrefix(ref, "https://"):
+		u, err := url.Parse(ref)
+		if err != nil {
+			return "", false
+		}
+		p := strings.TrimPrefix(u.Path, "/")
+		switch {
+		case u.Host == "storage.googleapis.com":
+			b, obj, ok := strings.Cut(p, "/")
+			if !ok || !sameBucket(b) {
+				return "", false
+			}
+			return obj, obj != ""
+		case strings.HasSuffix(u.Host, ".storage.googleapis.com"):
+			if !sameBucket(strings.TrimSuffix(u.Host, ".storage.googleapis.com")) {
+				return "", false
+			}
+			return p, p != ""
+		}
+		return "", false
+	case strings.Contains(ref, "://"):
+		return "", false
+	default:
+		return ref, true
+	}
+}
+
+// OwnedObject returns the object path a document reference points to, and
+// whether that object was uploaded by userID (see objectOwnedBy).
+func (s *UploadService) OwnedObject(ref string, userID uuid.UUID) (string, bool) {
+	obj, ok := s.objectFromReference(ref)
+	if !ok || !objectOwnedBy(obj, userID) {
+		return "", false
+	}
+	return obj, true
 }

@@ -26,7 +26,7 @@ export const WalletQuickActions: React.FC<WalletQuickActionsProps> = ({ wallet }
                 type="button"
                 onClick={() => {
                     if (wallet.actions?.can_send === false) {
-                        toast.error('Send feature is disabled for this wallet.');
+                        toast.error(t('messages.wallet.sendDisabled'));
                         return;
                     }
                     openSend(wallet.id);
@@ -49,7 +49,7 @@ export const WalletQuickActions: React.FC<WalletQuickActionsProps> = ({ wallet }
                 type="button"
                 onClick={() => {
                     if (wallet.actions?.can_receive === false) {
-                        toast.error('Receive feature is disabled for this wallet.');
+                        toast.error(t('messages.wallet.receiveDisabled'));
                         return;
                     }
                     openReceive(wallet.id);
@@ -72,7 +72,7 @@ export const WalletQuickActions: React.FC<WalletQuickActionsProps> = ({ wallet }
                 type="button"
                 onClick={() => {
                     if (wallet.actions?.can_exchange === false) {
-                        toast.error('Exchange feature is disabled for this wallet.');
+                        toast.error(t('messages.wallet.exchangeDisabled'));
                         return;
                     }
                     router.push('/exchange');

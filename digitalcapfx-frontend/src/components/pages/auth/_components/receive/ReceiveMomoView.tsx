@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { momoService, ManualMomoAccount } from '@/services/momo.service'
 import { toast } from 'sonner'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 interface ReceiveMomoViewProps {
     activeWallet: Wallet;
@@ -94,15 +95,15 @@ export const ReceiveMomoView: React.FC<ReceiveMomoViewProps> = ({
         onSuccess: (res) => {
             if (res?.success || res?.data) {
                 setSubmittedClaim(res.data || { amount: parseFloat(amount), currency: targetCurrency });
-                toast.success('Deposit claim submitted successfully!');
+                toast.success(t('messages.momo.claimSubmitted'));
                 queryClient.invalidateQueries({ queryKey: ['momoDeposits'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
             } else {
-                toast.error(res?.error?.message || 'Failed to submit deposit claim');
+                toast.error(apiErrorMessage(res, 'errors.action.depositClaim'));
             }
         },
         onError: (err: any) => {
-            toast.error(err.response?.data?.error?.message || 'Failed to submit deposit claim. Please retry.');
+            toast.error(apiErrorMessage(err, 'errors.action.depositClaim'));
         },
     });
 
@@ -114,19 +115,19 @@ export const ReceiveMomoView: React.FC<ReceiveMomoViewProps> = ({
             return;
         }
         if (!senderPhone || !senderPhone.trim()) {
-            toast.error('Please enter your Mobile Money phone number');
+            toast.error(t('messages.validation.momoPhone'));
             return;
         }
         if (!reference || !reference.trim()) {
-            toast.error('Please enter the transaction reference / Txn ID');
+            toast.error(t('messages.validation.txnRef'));
             return;
         }
         if (!senderName || !senderName.trim()) {
-            toast.error('Please enter the sender name on account');
+            toast.error(t('messages.validation.senderName'));
             return;
         }
         if (!selectedAccount) {
-            toast.error('Please select a payment provider account');
+            toast.error(t('messages.validation.provider'));
             return;
         }
 

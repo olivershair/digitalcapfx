@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import { useLanguageStore } from '@/store/languageStore'
 import { QRCodeSVG } from 'qrcode.react'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export const SecurityTab: React.FC = () => {
     const { t } = useLanguageStore();
@@ -53,7 +54,7 @@ export const SecurityTab: React.FC = () => {
         },
         onError: (err: any) => {
             console.error('2FA setup error:', err);
-            const msg = err.response?.data?.error?.message || t('settings.security.toast.setupError');
+            const msg = apiErrorMessage(err, 'settings.security.toast.setupError');
             toast.error(msg);
         }
     });
@@ -69,7 +70,7 @@ export const SecurityTab: React.FC = () => {
         },
         onError: (err: any) => {
             console.error('Confirm 2FA error:', err);
-            const msg = err.response?.data?.error?.message || t('settings.security.toast.invalidCode');
+            const msg = apiErrorMessage(err, 'settings.security.toast.invalidCode');
             toast.error(msg);
         }
     });
@@ -84,7 +85,7 @@ export const SecurityTab: React.FC = () => {
         },
         onError: (err: any) => {
             console.error('Disable 2FA error:', err);
-            const msg = err.response?.data?.error?.message || t('settings.security.toast.invalidDeactCode');
+            const msg = apiErrorMessage(err, 'settings.security.toast.invalidDeactCode');
             toast.error(msg);
         }
     });
@@ -99,7 +100,7 @@ export const SecurityTab: React.FC = () => {
         },
         onError: (err: any) => {
             console.error('Change PIN error:', err);
-            const msg = err.response?.data?.error?.message || t('settings.security.toast.pinError');
+            const msg = apiErrorMessage(err, 'settings.security.toast.pinError');
             toast.error(msg);
         }
     });

@@ -42,6 +42,9 @@ type RegisterRequest struct {
 	LastName    string `json:"last_name" example:"Dupont"`
 	PIN         string `json:"pin" example:"123456"`
 	Country     string `json:"country" example:"CM"` // ISO 3166-1 alpha-2
+	// PhoneVerificationToken is the `verification_token` returned by
+	// POST /auth/otp/verify for this same phone number (valid 60 minutes).
+	PhoneVerificationToken string `json:"phone_verification_token" example:"eyJhbGciOi..."`
 	// NOTE: BVN is NOT collected at signup — it is an optional field in the KYC
 	// intake (POST /kyc/intake) and activates the Nigerian (NGN) account.
 	// Business accounts only — company-level KYB fields collected at signup.
@@ -648,14 +651,14 @@ type UpdateCardRequest struct {
 }
 
 type VirtualCardData struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	MaskedPan      string    `json:"masked_pan"`
-	Expiry         string    `json:"expiry"`
-	ColorTheme     string    `json:"color_theme"`
-	CardArtID      string    `json:"card_art_id"`
-	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	MaskedPan  string    `json:"masked_pan"`
+	Expiry     string    `json:"expiry"`
+	ColorTheme string    `json:"color_theme"`
+	CardArtID  string    `json:"card_art_id"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type VirtualCardResponse struct {
@@ -714,6 +717,3 @@ type VTUTransactionListResponse struct {
 	Success bool                 `json:"success" example:"true"`
 	Data    []VTUTransactionData `json:"data"`
 }
-
-
-

@@ -74,7 +74,9 @@ export const StageBanner: React.FC<StageBannerProps> = ({
                 {t('settings.verification.status.inProgress')}
               </h4>
               <p className="text-slate-350 text-xs leading-relaxed max-w-2xl">
-                {t('settings.verification.status.pendingDesc')} Our automated identity verification engine and compliance team are processing your details.
+                {(kycData?.verificationMode || kycData?.verification_mode) === 'manual'
+                  ? t('settings.verification.manual.pendingDesc')
+                  : `${t('settings.verification.status.pendingDesc')} Our automated identity verification engine and compliance team are processing your details.`}
               </p>
             </div>
           </div>

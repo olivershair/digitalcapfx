@@ -34,6 +34,7 @@ import (
 	"github.com/rachfinance/digitalfx/internal/clients/nilos"
 	"github.com/rachfinance/digitalfx/internal/clients/nomba"
 	db "github.com/rachfinance/digitalfx/internal/db/sqlc"
+	"github.com/rachfinance/digitalfx/internal/pkg/redact"
 )
 
 // Destination type constants.
@@ -363,7 +364,7 @@ func (s *WithdrawalService) processMobileMoney(
 		zap.String("hub2_ref", resp.Reference),
 		zap.Float64("amount", quote.DestinationAmount),
 		zap.String("currency", req.DestinationCurrency),
-		zap.String("phone", req.PhoneNumber),
+		zap.String("phone", redact.Phone(req.PhoneNumber)),
 	)
 	return nil
 }

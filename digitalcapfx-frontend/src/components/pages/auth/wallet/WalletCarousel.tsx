@@ -13,6 +13,7 @@ import { useLanguageStore } from '@/store/languageStore'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { FEATURE_FLAGS, filterCryptoItems } from '@/config/featureFlags'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 const getCardBg = (currency: string) => {
     switch (currency.toUpperCase()) {
@@ -70,16 +71,16 @@ const WalletCarousel: React.FC = () => {
         mutationFn: (network: string) => accountService.provisionWaaSWallet(network),
         onSuccess: (res) => {
             if (res?.success) {
-                toast.success(`Successfully provisioned on-chain ${selectedNetwork} wallet.`);
+                toast.success(t('messages.wallet.provisioned', { network: selectedNetwork }));
                 setIsProvisionOpen(false);
                 queryClient.invalidateQueries({ queryKey: ['waasWallets'] });
                 queryClient.invalidateQueries({ queryKey: ['waasWalletsDetails'] });
             } else {
-                toast.error(res?.error?.message || 'Wallet provisioning failed.');
+                toast.error(apiErrorMessage(res, 'errors.action.provisionWallet'));
             }
         },
         onError: (err: any) => {
-            toast.error(err.response?.data?.error?.message || 'Could not provision wallet.');
+            toast.error(apiErrorMessage(err, 'errors.action.provisionWallet'));
         }
     });
 

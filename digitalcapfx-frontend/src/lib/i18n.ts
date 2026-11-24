@@ -1,6 +1,7 @@
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
+import { errorTranslations } from '@/lib/errorCatalog'
 
 const resources = {
   en: {
@@ -431,6 +432,25 @@ const resources = {
         'settings.verification.step2.backToFields': 'Back to Fields',
         'settings.verification.step2.proceedToBiometrics': 'Proceed to Biometrics (Didit)',
         'settings.verification.step3.title': 'Step {{step}}: Identity & Biometrics (Didit)',
+        'auth.sms.unavailable': 'The SMS service is temporarily unavailable. Please try again in a few minutes.',
+        'auth.sms.countryUnsupported': 'SMS verification is not available for phone numbers from {{country}} ({{code}}). Please contact support to open your account.',
+        'auth.sms.thisCountry': 'this country',
+        'auth.sms.numberRejected': "We can't send an SMS to this number. Check that it is correct and able to receive SMS; if it is, please contact support.",
+        'settings.verification.manual.navStep': 'Review & submit',
+        'settings.verification.manual.pendingDesc': 'Your file has been received and is being reviewed by our compliance team. You will be notified of the decision, usually within 1 business day.',
+        'settings.verification.manual.title': 'Step {{step}}: Review & submit your file',
+        'settings.verification.manual.desc': 'Your identity is verified manually by our compliance team. Check that everything is complete, then submit your file.',
+        'settings.verification.manual.checkIntake': 'Verification form submitted',
+        'settings.verification.manual.done': 'Done',
+        'settings.verification.manual.missingTitle': 'These documents are still missing:',
+        'settings.verification.manual.intakeFirst': 'Submit the verification form (step 1) before sending your file.',
+        'settings.verification.manual.privacy': 'Your documents are stored encrypted and are only viewed by authorised compliance staff. You will be notified of the decision, usually within 1 business day.',
+        'settings.verification.manual.back': 'Back to documents',
+        'settings.verification.manual.submit': 'Submit my file',
+        'settings.verification.manual.submitting': 'Submitting…',
+        'settings.verification.manual.submitted': 'Your file has been submitted for review.',
+        'settings.verification.manual.submitFailed': 'Could not submit your file. Please try again.',
+        'settings.verification.manual.proceed': 'Continue to submission',
         'settings.verification.step3.desc': 'Complete your identity document scan and facial liveness check via Didit. Once completed, your application is automatically approved.',
         'settings.verification.step3.active': 'Didit Identity Verification Active',
         'settings.verification.step3.reloadWidget': 'Reload Verification Widget',
@@ -1447,6 +1467,25 @@ const resources = {
         'settings.verification.step2.backToFields': 'Retour aux champs',
         'settings.verification.step2.proceedToBiometrics': 'Passer à la biométrie (Didit)',
         'settings.verification.step3.title': 'Étape {{step}} : Identité & biométrie (Didit)',
+        'auth.sms.unavailable': 'Le service SMS est momentanément indisponible. Réessayez dans quelques minutes.',
+        'auth.sms.countryUnsupported': "La vérification par SMS n'est pas disponible pour les numéros de {{country}} ({{code}}). Contactez le support pour ouvrir votre compte.",
+        'auth.sms.thisCountry': 'ce pays',
+        'auth.sms.numberRejected': "Impossible d'envoyer un SMS à ce numéro. Vérifiez qu'il est correct et peut recevoir des SMS ; si c'est le cas, contactez le support.",
+        'settings.verification.manual.navStep': 'Vérifier & soumettre',
+        'settings.verification.manual.pendingDesc': "Votre dossier a bien été reçu et est en cours d'examen par notre équipe conformité. Vous serez notifié de la décision, généralement sous 1 jour ouvré.",
+        'settings.verification.manual.title': 'Étape {{step}} : vérifier et soumettre votre dossier',
+        'settings.verification.manual.desc': 'Votre identité est vérifiée manuellement par notre équipe conformité. Vérifiez que tout est complet, puis soumettez votre dossier.',
+        'settings.verification.manual.checkIntake': 'Formulaire de vérification envoyé',
+        'settings.verification.manual.done': 'Fait',
+        'settings.verification.manual.missingTitle': 'Ces documents manquent encore :',
+        'settings.verification.manual.intakeFirst': 'Envoyez le formulaire de vérification (étape 1) avant de soumettre votre dossier.',
+        'settings.verification.manual.privacy': 'Vos documents sont stockés de façon chiffrée et consultés uniquement par le personnel conformité habilité. Vous serez notifié de la décision, généralement sous 1 jour ouvré.',
+        'settings.verification.manual.back': 'Retour aux documents',
+        'settings.verification.manual.submit': 'Soumettre mon dossier',
+        'settings.verification.manual.submitting': 'Envoi en cours…',
+        'settings.verification.manual.submitted': 'Votre dossier a été soumis pour vérification.',
+        'settings.verification.manual.submitFailed': 'Impossible de soumettre votre dossier. Veuillez réessayer.',
+        'settings.verification.manual.proceed': 'Continuer vers la soumission',
         'settings.verification.step3.desc': 'Effectuez le scan de votre pièce d\'identité et le contrôle de présence faciale via Didit. Une fois terminé, votre demande est automatiquement validée.',
         'settings.verification.step3.active': 'Vérification d\'identité Didit active',
         'settings.verification.step3.reloadWidget': 'Recharger le widget de vérification',
@@ -2284,6 +2323,25 @@ const resources = {
         'settings.verification.step2.backToFields': 'Volver a los campos',
         'settings.verification.step2.proceedToBiometrics': 'Continuar a biometría (Didit)',
         'settings.verification.step3.title': 'Paso {{step}}: Identidad y biometría (Didit)',
+        'auth.sms.unavailable': 'El servicio de SMS no está disponible temporalmente. Inténtelo de nuevo en unos minutos.',
+        'auth.sms.countryUnsupported': 'La verificación por SMS no está disponible para números de {{country}} ({{code}}). Contacte con soporte para abrir su cuenta.',
+        'auth.sms.thisCountry': 'este país',
+        'auth.sms.numberRejected': 'No podemos enviar un SMS a este número. Compruebe que es correcto y puede recibir SMS; si es así, contacte con soporte.',
+        'settings.verification.manual.navStep': 'Revisar y enviar',
+        'settings.verification.manual.pendingDesc': 'Hemos recibido su expediente y nuestro equipo de cumplimiento lo está revisando. Se le notificará la decisión, normalmente en 1 día hábil.',
+        'settings.verification.manual.title': 'Paso {{step}}: revise y envíe su expediente',
+        'settings.verification.manual.desc': 'Nuestro equipo de cumplimiento verifica su identidad manualmente. Compruebe que todo esté completo y envíe su expediente.',
+        'settings.verification.manual.checkIntake': 'Formulario de verificación enviado',
+        'settings.verification.manual.done': 'Hecho',
+        'settings.verification.manual.missingTitle': 'Aún faltan estos documentos:',
+        'settings.verification.manual.intakeFirst': 'Envíe el formulario de verificación (paso 1) antes de enviar su expediente.',
+        'settings.verification.manual.privacy': 'Sus documentos se almacenan cifrados y solo los consulta el personal de cumplimiento autorizado. Se le notificará la decisión, normalmente en 1 día hábil.',
+        'settings.verification.manual.back': 'Volver a los documentos',
+        'settings.verification.manual.submit': 'Enviar mi expediente',
+        'settings.verification.manual.submitting': 'Enviando…',
+        'settings.verification.manual.submitted': 'Su expediente ha sido enviado para revisión.',
+        'settings.verification.manual.submitFailed': 'No se pudo enviar su expediente. Inténtelo de nuevo.',
+        'settings.verification.manual.proceed': 'Continuar al envío',
         'settings.verification.step3.desc': 'Complete el escaneo de su documento de identidad y la prueba de presencia facial a través de Didit. Una vez completado, su verificación se aprueba automáticamente.',
         'settings.verification.step3.active': 'Verificación de identidad de Didit activa',
         'settings.verification.step3.reloadWidget': 'Recargar widget de verificación',
@@ -3351,6 +3409,11 @@ const resources = {
         'contact.generalEnquiries': '一般咨询'
     }
   }
+}
+
+// Explicit, translated API error messages (see lib/apiErrors.ts).
+for (const lang of ['en', 'fr', 'es', 'zh'] as const) {
+  Object.assign(resources[lang].translation, errorTranslations(lang))
 }
 
 i18n

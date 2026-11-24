@@ -43,7 +43,11 @@ func (h *NombaWebhookHandler) Receive(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.svc.Nomba.HandleWebhook(r.Context(), body, r.Header); err != nil {
 		if errors.Is(err, services.ErrNombaWebhookSignature) {
-			response.Unauthorized(w, "invalid webhook signature")
+			response.WebhookSignatureInvalid(w, "nomba", "nomba-signature", "NOMBA_WEBHOOK_SECRET")
+			return
+		}
+		if errors.Is(err, services.ErrWebhookNotConfigured) {
+			response.WebhookSecretMissing(w, "nomba", "NOMBA_WEBHOOK_SECRET")
 			return
 		}
 		// Any other error is a processing issue — log and still 200 so Nomba does

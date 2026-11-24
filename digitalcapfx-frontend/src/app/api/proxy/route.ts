@@ -1,4 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+    ACCESS_COOKIE_MAX_AGE,
+    REFRESH_COOKIE_MAX_AGE,
+    clientIp,
+    proxyError,
+    rejectCrossSite,
+    sessionCookie,
+    uiCookie,
+} from '../_lib/security';
 
 const getAccountTypeFromToken = (token: string): string | null => {
     try {
@@ -11,21 +20,61 @@ const getAccountTypeFromToken = (token: string): string | null => {
     }
 };
 
-// Module-level active token refresh Promise to prevent concurrent request race conditions
-let activeRefreshPromise: Promise<{ accessToken: string; refreshToken: string } | null> | null = null;
+const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
-async function performTokenRefresh(backendUrl: string, refreshToken: string) {
-    if (activeRefreshPromise) {
-        return activeRefreshPromise;
+/**
+ * SECURITY: the endpoint comes from the browser, so it must stay a plain API
+ * path under the backend base URL. Rejects path traversal ("..", including the
+ * percent-encoded forms the URL parser also resolves), backslashes, scheme or
+ * authority tricks, and the non-API surfaces (webhooks, swagger).
+ */
+function isSafeEndpoint(endpoint: unknown): endpoint is string {
+    if (typeof endpoint !== 'string' || endpoint.length === 0 || endpoint.length > 4096) return false;
+    if (endpoint.includes('#') || endpoint.includes('\\')) return false;
+
+    // Only the PATH can redirect the request elsewhere on the backend; the query
+    // string may legitimately carry encoded "/" or "." (e.g. ?object=kyc%2F…).
+    const qIndex = endpoint.indexOf('?');
+    const pathPart = (qIndex === -1 ? endpoint : endpoint.slice(0, qIndex)).toLowerCase();
+    const queryPart = qIndex === -1 ? '' : endpoint.slice(qIndex + 1);
+
+    if (
+        pathPart.includes('..') ||
+        pathPart.includes('%') || // no encoded traversal (%2e, %2f, %5c…) in the path
+        pathPart.includes('//') ||
+        pathPart.includes(':') ||
+        pathPart.includes('@')
+    ) {
+        return false;
+    }
+    if (!/^\/?[a-z0-9\-._~/]*$/.test(pathPart)) return false;
+    if (!/^[A-Za-z0-9\-._~%+=&,:@/!*'()$;]*$/.test(queryPart)) return false;
+
+    const path = pathPart.replace(/^\/+/, '').replace(/^api\/v1\//, '');
+    if (path.startsWith('webhooks') || path.startsWith('swagger')) return false;
+    return true;
+}
+
+// In-flight refreshes, keyed by refresh token. SECURITY: this used to be a
+// single module-level promise shared by ALL users — two users refreshing at the
+// same time could receive each other's tokens. Keying by the refresh token
+// keeps each user's refresh isolated while still de-duplicating parallel
+// requests from the same browser.
+const activeRefreshes = new Map<string, Promise<{ accessToken: string; refreshToken: string } | null>>();
+
+async function performTokenRefresh(backendUrl: string, refreshToken: string, ip: string | null) {
+    const inFlight = activeRefreshes.get(refreshToken);
+    if (inFlight) {
+        return inFlight;
     }
 
-    activeRefreshPromise = (async () => {
+    const promise = (async () => {
         try {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (ip) headers['X-Forwarded-For'] = ip;
             const refreshRes = await fetch(`${backendUrl}/auth/token/refresh`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers,
                 body: JSON.stringify({
                     refresh_token: refreshToken,
                     refreshToken: refreshToken,
@@ -64,30 +113,65 @@ async function performTokenRefresh(backendUrl: string, refreshToken: string) {
             }
             return null;
         } catch (err) {
-            console.error('[API PROXY] Token refresh failure:', err);
+            console.error('[API PROXY] Token refresh failure');
             return null;
         } finally {
             setTimeout(() => {
-                activeRefreshPromise = null;
+                activeRefreshes.delete(refreshToken);
             }, 100);
         }
     })();
 
-    return activeRefreshPromise;
+    activeRefreshes.set(refreshToken, promise);
+    return promise;
+}
+
+function setSessionCookies(res: NextResponse, accessToken: string | null, refreshToken: string | null) {
+    if (accessToken) {
+        res.cookies.set('noe_token', accessToken, sessionCookie(ACCESS_COOKIE_MAX_AGE));
+        const accType = getAccountTypeFromToken(accessToken);
+        if (accType) {
+            res.cookies.set('account_type', accType, uiCookie(REFRESH_COOKIE_MAX_AGE));
+        }
+    }
+    if (refreshToken) {
+        res.cookies.set('noe_refresh_token', refreshToken, sessionCookie(REFRESH_COOKIE_MAX_AGE));
+    }
 }
 
 export async function POST(request: NextRequest) {
     const backendUrl = process.env.BACKEND_API_URL;
     if (!backendUrl) {
-        return NextResponse.json({ success: false, error: 'BACKEND_API_URL not configured' }, { status: 500 });
+        console.error('[API PROXY] BACKEND_API_URL is not configured');
+        return proxyError(500, 'PROXY_NOT_CONFIGURED', 'the API proxy is not configured');
+    }
+
+    // SECURITY (CSRF): only our own pages may use the session cookie through this proxy.
+    const crossSite = rejectCrossSite(request);
+    if (crossSite) return crossSite;
+
+    // SECURITY (CSRF): a cross-site HTML form cannot send application/json
+    // without a CORS preflight, which this route never grants.
+    const contentType = request.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().startsWith('application/json')) {
+        return proxyError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Content-Type must be application/json');
     }
 
     try {
-        const body = await request.json();
-        const { endpoint, method = 'GET', body: reqBody, headers = {} } = body;
+        let body: any;
+        try {
+            body = await request.json();
+        } catch {
+            return proxyError(400, 'INVALID_JSON', 'invalid JSON body');
+        }
+        const { endpoint, method = 'GET', body: reqBody } = body || {};
 
-        if (!endpoint) {
-            return NextResponse.json({ success: false, error: 'Missing endpoint' }, { status: 400 });
+        if (!isSafeEndpoint(endpoint)) {
+            return proxyError(400, 'INVALID_ENDPOINT', 'invalid or forbidden endpoint');
+        }
+        const upperMethod = String(method).toUpperCase();
+        if (!ALLOWED_METHODS.has(upperMethod)) {
+            return proxyError(405, 'METHOD_NOT_ALLOWED', 'method not allowed');
         }
 
         // Clean slash combinations
@@ -97,25 +181,25 @@ export async function POST(request: NextRequest) {
         }
         const targetUrl = `${backendUrl}/${cleanedEndpoint}`;
 
-        // Prepare headers to forward to backend
+        // SECURITY: headers sent by the browser are NOT forwarded (they could
+        // override Authorization or spoof X-Forwarded-For). Only what the proxy
+        // controls goes to the backend.
         const forwardHeaders = new Headers();
         forwardHeaders.set('Content-Type', 'application/json');
+        const acceptLanguage = request.headers.get('accept-language');
+        if (acceptLanguage) forwardHeaders.set('Accept-Language', acceptLanguage);
+        const ip = clientIp(request);
+        if (ip) forwardHeaders.set('X-Forwarded-For', ip);
 
-        // Copy incoming headers from proxy call body
-        Object.entries(headers).forEach(([key, val]) => {
-            if (val) forwardHeaders.set(key, String(val));
-        });
-
-        // Set Bearer token from cookies if not already specified
-        let cookieToken = request.cookies.get('noe_token')?.value;
-        if (cookieToken && !forwardHeaders.has('Authorization')) {
+        const cookieToken = request.cookies.get('noe_token')?.value;
+        if (cookieToken) {
             forwardHeaders.set('Authorization', `Bearer ${cookieToken}`);
         }
 
-        const fetchBody = reqBody ? JSON.stringify(reqBody) : undefined;
+        const fetchBody = reqBody && upperMethod !== 'GET' ? JSON.stringify(reqBody) : undefined;
 
         let response = await fetch(targetUrl, {
-            method: method.toUpperCase(),
+            method: upperMethod,
             headers: forwardHeaders,
             body: fetchBody,
         });
@@ -133,7 +217,7 @@ export async function POST(request: NextRequest) {
             const refreshToken = request.cookies.get('noe_refresh_token')?.value;
 
             if (refreshToken) {
-                const refreshed = await performTokenRefresh(backendUrl, refreshToken);
+                const refreshed = await performTokenRefresh(backendUrl, refreshToken, ip);
                 if (refreshed && refreshed.accessToken) {
                     newAccessToken = refreshed.accessToken;
                     newRefreshToken = refreshed.refreshToken;
@@ -141,7 +225,7 @@ export async function POST(request: NextRequest) {
 
                     forwardHeaders.set('Authorization', `Bearer ${newAccessToken}`);
                     response = await fetch(targetUrl, {
-                        method: method.toUpperCase(),
+                        method: upperMethod,
                         headers: forwardHeaders,
                         body: fetchBody,
                     });
@@ -165,53 +249,9 @@ export async function POST(request: NextRequest) {
 
         // Save rotated access and refresh tokens to cookies
         if (didRefresh && newAccessToken && newRefreshToken) {
-            res.cookies.set('noe_token', newAccessToken, {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                path: '/',
-                maxAge: 30 * 24 * 60 * 60, // 30 days
-            });
-            res.cookies.set('noe_refresh_token', newRefreshToken, {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                path: '/',
-                maxAge: 30 * 24 * 60 * 60, // 30 days
-            });
-            const accType = getAccountTypeFromToken(newAccessToken);
-            if (accType) {
-                res.cookies.set('account_type', accType, {
-                    httpOnly: false,
-                    secure: process.env.NODE_ENV === 'production',
-                    path: '/',
-                    maxAge: 30 * 24 * 60 * 60,
-                });
-            }
+            setSessionCookies(res, newAccessToken, newRefreshToken);
         } else if (response.status >= 200 && response.status < 300 && isAuthEndpoint) {
-            if (respAccessToken) {
-                res.cookies.set('noe_token', respAccessToken, {
-                    httpOnly: true,
-                    secure: process.env.NODE_ENV === 'production',
-                    path: '/',
-                    maxAge: 30 * 24 * 60 * 60, // 30 days
-                });
-                const accType = getAccountTypeFromToken(respAccessToken);
-                if (accType) {
-                    res.cookies.set('account_type', accType, {
-                        httpOnly: false,
-                        secure: process.env.NODE_ENV === 'production',
-                        path: '/',
-                        maxAge: 30 * 24 * 60 * 60,
-                    });
-                }
-            }
-            if (respRefreshToken) {
-                res.cookies.set('noe_refresh_token', respRefreshToken, {
-                    httpOnly: true,
-                    secure: process.env.NODE_ENV === 'production',
-                    path: '/',
-                    maxAge: 30 * 24 * 60 * 60, // 30 days
-                });
-            }
+            setSessionCookies(res, respAccessToken || null, respRefreshToken || null);
         }
 
         // If the server explicitly rejected auth (and refresh failed), or user logged out, wipe the cookies
@@ -223,7 +263,8 @@ export async function POST(request: NextRequest) {
 
         return res;
     } catch (error: any) {
+        // SECURITY: log details server-side only; the browser gets a generic error.
         console.error('API Proxy POST handler error:', error);
-        return NextResponse.json({ success: false, error: error.message || 'Proxy failure' }, { status: 502 });
+        return proxyError(502, 'PROXY_ERROR', 'the service is temporarily unavailable');
     }
 }

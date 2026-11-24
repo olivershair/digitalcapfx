@@ -3,14 +3,16 @@
 import React, { useState } from 'react'
 import { Send } from 'lucide-react'
 import { toast } from 'sonner'
+import { useLanguageStore } from '@/store/languageStore'
 
 export const NewsletterSection: React.FC = () => {
+    const { t } = useLanguageStore()
     const [email, setEmail] = useState('')
 
     const handleSubscribe = (e: React.FormEvent) => {
         e.preventDefault()
         if (!email || !email.includes('@')) return
-        toast.success('Thank you for subscribing to DigitalCap FX updates!')
+        toast.success(t('messages.newsletter.subscribed'))
         setEmail('')
     }
 

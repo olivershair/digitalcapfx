@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -378,18 +380,27 @@ func (h *WalletHandler) EstimateGas(w http.ResponseWriter, r *http.Request) {
 // RevealSeed godoc
 //
 //	@Summary      Reveal WaaS seed phrase (SENSITIVE)
-//	@Description  Returns the BIP-39 mnemonic for the caller's Rach WaaS HD wallet. HIGHLY SENSITIVE — anyone with this phrase controls ALL of the user's crypto. Intended for self-custody export; gate behind step-up auth (PIN/biometric/2FA) before surfacing in any UI.
+//	@Description  Returns the BIP-39 mnemonic for the caller's Rach WaaS HD wallet. HIGHLY SENSITIVE — anyone with this phrase controls ALL of the user's crypto. Requires step-up authentication: the account PIN, plus the authenticator code when 2FA is enabled (5 failures → 15-minute lockout).
 //	@Tags         WaaS - Crypto Wallets
+//	@Accept       json
 //	@Produce      json
 //	@Security     BearerAuth
+//	@Param        body  body      StepUpRequest  true  "PIN (+ totp_code if 2FA is enabled)"
 //	@Success      200  {object}  payments.GetSeedPhraseResponse
 //	@Failure      401  {object}  ErrorResponse
+//	@Failure      403  {object}  ErrorResponse  "STEP_UP_REQUIRED / STEP_UP_FAILED"
+//	@Failure      429  {object}  ErrorResponse
 //	@Failure      500  {object}  ErrorResponse
-//	@Router       /wallets/seed [get]
+//	@Router       /wallets/seed [post]
 func (h *WalletHandler) RevealSeed(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.UserIDFromContext(r.Context())
 	if !ok {
 		response.Unauthorized(w, "unauthorized")
+		return
+	}
+	var body StepUpRequest
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	if !h.stepUp(w, r, userID, body.PIN, body.TOTPCode) {
 		return
 	}
 	res, err := h.svc.Wallet.GetSeedPhrase(r.Context(), userID)
@@ -402,14 +413,48 @@ func (h *WalletHandler) RevealSeed(w http.ResponseWriter, r *http.Request) {
 
 // ExportKeyRequest is the body for POST /wallets/export-key.
 type ExportKeyRequest struct {
-	Network string `json:"network" example:"POL"`
-	Index   uint32 `json:"index,omitempty"`
+	Network  string `json:"network" example:"POL"`
+	Index    uint32 `json:"index,omitempty"`
+	PIN      string `json:"pin" example:"123456"`
+	TOTPCode string `json:"totp_code,omitempty" example:"123456"`
+}
+
+// StepUpRequest re-authenticates the caller before a sensitive export.
+type StepUpRequest struct {
+	PIN      string `json:"pin" example:"123456"`
+	TOTPCode string `json:"totp_code,omitempty" example:"123456"`
+}
+
+// stepUp verifies the PIN (+ TOTP when enabled) and writes an explicit error
+// response on failure. Returns true when the caller may proceed.
+func (h *WalletHandler) stepUp(w http.ResponseWriter, r *http.Request, userID uuid.UUID, pin, totpCode string) bool {
+	err := h.svc.Auth.VerifyStepUp(r.Context(), userID, pin, totpCode)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, services.ErrTooManyAttempts):
+		response.TooManyRequests(w, "too many attempts — please wait 15 minutes and try again")
+	case errors.Is(err, services.ErrStepUpRequired), errors.Is(err, services.ErrStepUpTOTPMissing),
+		errors.Is(err, services.ErrStepUpUnavailable):
+		response.JSON(w, http.StatusForbidden, response.Envelope{
+			Success: false,
+			Error:   &response.Error{Code: "STEP_UP_REQUIRED", Message: err.Error()},
+		})
+	case errors.Is(err, services.ErrInvalidPIN), errors.Is(err, services.ErrInvalidOTP):
+		response.JSON(w, http.StatusForbidden, response.Envelope{
+			Success: false,
+			Error:   &response.Error{Code: "STEP_UP_FAILED", Message: "incorrect PIN or authenticator code"},
+		})
+	default:
+		response.InternalError(w)
+	}
+	return false
 }
 
 // ExportPrivateKey godoc
 //
 //	@Summary      Export WaaS private key (SENSITIVE)
-//	@Description  Exports the private key for one of the caller's derived WaaS addresses. HIGHLY SENSITIVE — grants full control of that address. Index must match the derivation index used when the address was created (default 0). Gate behind step-up auth before surfacing in any UI.
+//	@Description  Exports the private key for one of the caller's derived WaaS addresses. HIGHLY SENSITIVE — grants full control of that address. Index must match the derivation index used when the address was created (default 0). Requires step-up authentication: `pin`, plus `totp_code` when 2FA is enabled (5 failures → 15-minute lockout).
 //	@Tags         WaaS - Crypto Wallets
 //	@Accept       json
 //	@Produce      json
@@ -429,6 +474,9 @@ func (h *WalletHandler) ExportPrivateKey(w http.ResponseWriter, r *http.Request)
 	var body ExportKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Network == "" {
 		response.BadRequest(w, "VALIDATION_ERROR", "network is required")
+		return
+	}
+	if !h.stepUp(w, r, userID, body.PIN, body.TOTPCode) {
 		return
 	}
 	res, err := h.svc.Wallet.ExportPrivateKey(r.Context(), userID, body.Network, body.Index)

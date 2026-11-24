@@ -35,17 +35,17 @@ export default function ContactPage() {
         e.preventDefault()
 
         if (!firstName.trim() || !lastName.trim()) {
-            toast.error('Please enter your first and last name.')
+            toast.error(t('messages.validation.name'))
             return
         }
 
         if (!email.trim() || !email.includes('@')) {
-            toast.error('Please enter a valid email address.')
+            toast.error(t('messages.validation.email'))
             return
         }
 
         if (!message.trim()) {
-            toast.error('Please enter your message details.')
+            toast.error(t('messages.validation.message'))
             return
         }
 
@@ -53,7 +53,7 @@ export default function ContactPage() {
 
         setTimeout(() => {
             setIsSubmitting(false)
-            toast.success('Thank you for contacting DigitalCap FX! Our team will get back to you shortly.')
+            toast.success(t('messages.contact.sent'))
             setFirstName('')
             setLastName('')
             setEmail('')
@@ -66,10 +66,10 @@ export default function ContactPage() {
     const handleNewsletterSubscribe = (e: React.FormEvent) => {
         e.preventDefault()
         if (!newsletterEmail || !newsletterEmail.includes('@')) {
-            toast.error('Please enter a valid email address.')
+            toast.error(t('messages.validation.email'))
             return
         }
-        toast.success('Thank you for subscribing to DigitalCap FX updates!')
+        toast.success(t('messages.newsletter.subscribed'))
         setNewsletterEmail('')
     }
 

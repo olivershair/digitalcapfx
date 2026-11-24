@@ -70,7 +70,7 @@ export const ExchangeHistoryPage: React.FC = () => {
     const handleCopy = (text: string, field: string) => {
         navigator.clipboard.writeText(text);
         setCopiedField(field);
-        toast.success(`Copied ${field} to clipboard`);
+        toast.success(t('messages.copied', { field }));
         setTimeout(() => setCopiedField(null), 2000);
     };
 

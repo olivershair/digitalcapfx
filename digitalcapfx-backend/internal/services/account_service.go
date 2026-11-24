@@ -125,10 +125,20 @@ func (s *AccountService) ListTransactions(ctx context.Context, in ListTransactio
 	return &ListTransactionsResult{Transactions: txs, Total: total}, nil
 }
 
-func (s *AccountService) GetTransaction(ctx context.Context, id uuid.UUID) (*db.Transaction, error) {
+// GetTransaction returns a transaction only if it belongs to one of userID's
+// accounts. SECURITY (IDOR): a transaction owned by someone else is reported
+// exactly like a missing one, so ids cannot be probed.
+func (s *AccountService) GetTransaction(ctx context.Context, userID, id uuid.UUID) (*db.Transaction, error) {
 	q := db.New(s.pool)
 	tx, err := q.GetTransactionByID(ctx, id)
 	if err != nil {
+		return nil, ErrAccountNotFound
+	}
+	var owned bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1 AND user_id = $2)`,
+		tx.AccountID, userID,
+	).Scan(&owned); err != nil || !owned {
 		return nil, ErrAccountNotFound
 	}
 	return &tx, nil

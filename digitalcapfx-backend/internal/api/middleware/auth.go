@@ -29,6 +29,9 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// tokenSubjectAccess mirrors token.SubjectAccess (the subject set on access tokens).
+const tokenSubjectAccess = "access"
+
 func Auth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,12 +45,19 @@ func Auth(secret string) func(http.Handler) http.Handler {
 
 			claims := &Claims{}
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, jwt.ErrSignatureInvalid
-				}
 				return []byte(secret), nil
-			})
+			}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 			if err != nil || !token.Valid {
+				response.Unauthorized(w, "invalid or expired token")
+				return
+			}
+
+			// SECURITY: refresh tokens and pending-2FA tokens are signed with the
+			// same secret. Only an access token may authenticate a request —
+			// otherwise a pending-2FA token (issued after the PIN alone) would
+			// bypass the TOTP step, and a 7-day refresh token would work as a
+			// long-lived access token.
+			if claims.Subject != tokenSubjectAccess {
 				response.Unauthorized(w, "invalid or expired token")
 				return
 			}
@@ -69,6 +79,57 @@ func Auth(secret string) func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ContextKeyRole, role)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// ActiveSession rejects a request whose session has been revoked or expired, or
+// whose account has been disabled. Must be used after Auth.
+//
+// SECURITY: a JWT stays cryptographically valid until it expires, so without
+// this check logout, "disconnect device", PIN reset (which revokes every
+// session) and admin "disable user" would not cut off a stolen or still-open
+// access token. One indexed lookup per request.
+func ActiveSession(pool *pgxpool.Pool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := UserIDFromContext(r.Context())
+			if !ok {
+				response.Unauthorized(w, "unauthorized")
+				return
+			}
+			sid, ok := SessionIDFromContext(r.Context())
+			if !ok {
+				response.Unauthorized(w, "session missing — please sign in again")
+				return
+			}
+			sessionID, err := uuid.Parse(sid)
+			if err != nil {
+				response.Unauthorized(w, "invalid session — please sign in again")
+				return
+			}
+
+			var userActive, sessionActive bool
+			err = pool.QueryRow(r.Context(), `
+				SELECT u.is_active,
+				       COALESCE(s.is_active AND s.expires_at > NOW(), false)
+				FROM users u
+				LEFT JOIN user_sessions s ON s.id = $2 AND s.user_id = u.id
+				WHERE u.id = $1`, userID, sessionID,
+			).Scan(&userActive, &sessionActive)
+			if err != nil {
+				response.Unauthorized(w, "session not found — please sign in again")
+				return
+			}
+			if !userActive {
+				response.Forbidden(w, "account is inactive")
+				return
+			}
+			if !sessionActive {
+				response.Unauthorized(w, "session revoked or expired — please sign in again")
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

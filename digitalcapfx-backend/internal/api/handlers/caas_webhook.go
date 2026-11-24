@@ -91,13 +91,18 @@ func (h *CaasWebhookHandler) Receive(w http.ResponseWriter, r *http.Request) {
 	// `X-Rach-Signature: sha256=<hex>` over the raw body; we also tolerate a few
 	// alternate header names / encodings as a hardening fallback and log the
 	// received headers on mismatch.
-	if h.secret != "" {
-		if !verifyCaasWebhookSignature(r, body, []byte(h.secret)) {
-			h.logger.Warn("caas webhook: signature verification failed",
-				zap.Strings("x_headers", collectSignatureHeaders(r)))
-			response.Unauthorized(w, "invalid webhook signature")
-			return
-		}
+	// SECURITY: fail closed — never process an unsigned delivery. 503 makes the
+	// provider retry until CAAS_WEBHOOK_SECRET is configured.
+	if h.secret == "" {
+		h.logger.Error("caas webhook rejected: CAAS_WEBHOOK_SECRET is not set")
+		response.WebhookSecretMissing(w, "caas (Rach CaaS)", "CAAS_WEBHOOK_SECRET")
+		return
+	}
+	if !verifyCaasWebhookSignature(r, body, []byte(h.secret)) {
+		h.logger.Warn("caas webhook: signature verification failed",
+			zap.Strings("x_headers", collectSignatureHeaders(r)))
+		response.WebhookSignatureInvalid(w, "caas (Rach CaaS)", "X-Rach-Signature", "CAAS_WEBHOOK_SECRET")
+		return
 	}
 
 	var p CaasWebhookPayload

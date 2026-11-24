@@ -101,14 +101,22 @@ func New(
 			cfg.Sumsub.AppToken, cfg.Sumsub.SecretKey, cfg.Sumsub.LevelName, cfg.Sumsub.WebhookSecret))
 	} else if cfg.KYCProvider == "metamap" {
 		kycProvider = kyc.NewMetaMapProvider(metamapClient, cfg.MetaMap.FlowID, cfg.MetaMap.WebhookSecret)
+	} else if cfg.KYCManualMode() {
+		// No vendor: customers upload ID + selfie, staff approve/reject.
+		kycProvider = kyc.NewManualProvider()
+		logger.Info("KYC running in MANUAL mode (KYC_PROVIDER=manual): staff review every file")
 	}
+
+	uploadSvc := NewUploadService(cfg, logger)
+	kycSvc := NewKYCService(pool, cfg, logger, kycProvider, emailClient, notif, nilosClient, nombaClient)
+	kycSvc.uploads = uploadSvc
 
 	return &Services{
 		Auth:           NewAuthService(pool, rdb, cfg, logger, emailClient, smsClient),
 		Account:        NewAccountService(pool, logger),
 		Wallet:         NewWalletService(pool, paymentsClient, hub2Client, logger),
 		CaaS:           NewCaaSService(pool, caasClient, hub2Client, logger),
-		KYC:            NewKYCService(pool, cfg, logger, kycProvider, emailClient, notif, nilosClient, nombaClient),
+		KYC:            kycSvc,
 		Nomba:          NewNombaService(pool, nombaClient, notif, cfg.Nomba.WebhookSecret, logger),
 		Nilos:          nilosSvc,
 		HUB2:           hub2Svc,
@@ -127,7 +135,7 @@ func New(
 		Business:       NewBusinessService(pool, logger),
 		Referral:       NewReferralService(pool, logger),
 		Swap:           NewSwapService(paymentsClient, logger),
-		Upload:         NewUploadService(cfg, logger),
+		Upload:         uploadSvc,
 		Limits:         limitsSvc,
 		UserManagement: NewUserManagementService(pool, logger),
 		Cards:          NewCardService(pool, logger),

@@ -8,9 +8,12 @@ import { isValidPhoneNumber } from 'react-phone-number-input'
 import { toast } from 'sonner'
 import { useMutation } from '@tanstack/react-query'
 import { authService, LoginRequest } from '@/services/auth.service'
+import { apiErrorMessage } from '@/lib/apiErrors'
+import { useLanguageStore } from '@/store/languageStore'
 
 const Login = () => {
     const router = useRouter();
+    const { t } = useLanguageStore();
     const [phone, setPhone] = useState('');
     const [phoneError, setPhoneError] = useState('');
     const [pin, setPin] = useState('');
@@ -31,29 +34,23 @@ const Login = () => {
                 if (data.data?.requires2Fa || data.data?.requires_2fa) {
                     setTotpRef(data.data.ref || '');
                     setIs2FA(true);
-                    toast.info('2FA verification code required.');
+                    toast.info(t('messages.login.totpRequired'));
                 } else {
-                    toast.success('Logged in successfully!');
+                    toast.success(t('messages.login.success'));
                     if (data?.data?.accountType) {
                         localStorage.setItem('account_type', data.data.accountType);
                     }
                     router.push('/dashboard');
                 }
             } else {
-                const rawError = data?.error;
-                const msg = typeof rawError === 'object'
-                    ? (rawError.message || JSON.stringify(rawError))
-                    : (rawError || 'Invalid phone number or PIN');
+                const msg = apiErrorMessage(data, 'errors.action.login');
                 setErrorMsg(msg);
                 toast.error(msg);
             }
         },
         onError: (err: any) => {
             console.error('Login error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object'
-                ? (rawError.message || JSON.stringify(rawError))
-                : (rawError || err.response?.data?.message || 'Authentication failed. Please verify your credentials.');
+            const msg = apiErrorMessage(err, 'errors.action.login');
             setErrorMsg(msg);
             toast.error(msg);
         }
@@ -63,7 +60,7 @@ const Login = () => {
     const login2FAMutation = useMutation({
         mutationFn: (payload: { ref: string; code: string }) => authService.login2FA(payload.ref, payload.code),
         onSuccess: (data) => {
-            toast.success('MFA verification successful! Logged in.');
+            toast.success(t('messages.login.success'));
             if (data?.data?.accountType) {
                 localStorage.setItem('account_type', data.data.accountType);
             }
@@ -71,10 +68,7 @@ const Login = () => {
         },
         onError: (err: any) => {
             console.error('MFA validation error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object'
-                ? (rawError.message || JSON.stringify(rawError))
-                : (rawError || err.response?.data?.message || 'Invalid 2FA code.');
+            const msg = apiErrorMessage(err, 'errors.invalid2fa');
             setErrorMsg(msg);
             toast.error(msg);
         }
@@ -84,7 +78,7 @@ const Login = () => {
     const googleLoginMutation = useMutation({
         mutationFn: (token: string) => authService.loginGoogle(token),
         onSuccess: (data) => {
-            toast.success('Signed in with Google successfully!');
+            toast.success(t('messages.login.success'));
             if (data?.data?.accountType) {
                 localStorage.setItem('account_type', data.data.accountType);
             }
@@ -92,10 +86,7 @@ const Login = () => {
         },
         onError: (err: any) => {
             console.error('Google Sign-In error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object'
-                ? (rawError.message || JSON.stringify(rawError))
-                : (rawError || err.response?.data?.message || 'Google OAuth failed.');
+            const msg = apiErrorMessage(err, 'errors.invalidGoogleToken');
             setErrorMsg(msg);
             toast.error(msg);
         }
@@ -108,12 +99,12 @@ const Login = () => {
         setPhoneError('');
 
         if (!phone) {
-            setPhoneError('Phone number is required');
+            setPhoneError(t('messages.validation.phoneRequired'));
             return;
         }
 
         if (!isValidPhoneNumber(phone)) {
-            setPhoneError('Please enter a valid phone number');
+            setPhoneError(t('messages.validation.phoneInvalid'));
             return;
         }
 

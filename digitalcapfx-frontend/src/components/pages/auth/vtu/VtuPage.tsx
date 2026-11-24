@@ -11,6 +11,7 @@ import { BillPaymentForm } from './_components/BillPaymentForm'
 import { VtuTxHistory } from './_components/VtuTxHistory'
 import { cn } from '@/lib/utils'
 import { useLanguageStore } from '@/store/languageStore'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export const VtuPage: React.FC = () => {
     const { t } = useLanguageStore();
@@ -34,13 +35,12 @@ export const VtuPage: React.FC = () => {
                 toast.success(t('vtu.toast.airtimeSuccess'));
                 queryClient.invalidateQueries({ queryKey: ['vtuTransactions'] });
             } else {
-                toast.error(data?.error?.message || t('vtu.toast.airtimeFailed'));
+                toast.error(apiErrorMessage(data, 'vtu.toast.airtimeFailed'));
             }
         },
         onError: (err: any) => {
             console.error('Airtime purchase error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || t('vtu.toast.airtimeError'));
+            const msg = apiErrorMessage(err, 'vtu.toast.airtimeError');
             toast.error(msg);
         }
     });
@@ -52,13 +52,12 @@ export const VtuPage: React.FC = () => {
                 toast.success(t('vtu.toast.dataSuccess'));
                 queryClient.invalidateQueries({ queryKey: ['vtuTransactions'] });
             } else {
-                toast.error(data?.error?.message || t('vtu.toast.dataFailed'));
+                toast.error(apiErrorMessage(data, 'vtu.toast.dataFailed'));
             }
         },
         onError: (err: any) => {
             console.error('Data purchase error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || t('vtu.toast.dataError'));
+            const msg = apiErrorMessage(err, 'vtu.toast.dataError');
             toast.error(msg);
         }
     });
@@ -70,13 +69,12 @@ export const VtuPage: React.FC = () => {
                 toast.success(t('vtu.toast.billSuccess'));
                 queryClient.invalidateQueries({ queryKey: ['vtuTransactions'] });
             } else {
-                toast.error(data?.error?.message || t('vtu.toast.billFailed'));
+                toast.error(apiErrorMessage(data, 'vtu.toast.billFailed'));
             }
         },
         onError: (err: any) => {
             console.error('Bill payment error:', err);
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || t('vtu.toast.billError'));
+            const msg = apiErrorMessage(err, 'vtu.toast.billError');
             toast.error(msg);
         }
     });

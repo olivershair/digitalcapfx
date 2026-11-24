@@ -5,6 +5,8 @@ import { Upload, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { uploadService } from '@/services/upload.service'
 import { toast } from 'sonner'
+import i18n from '@/lib/i18n'
+import { apiErrorMessage } from '@/lib/apiErrors'
 import { FilePreviewDialog } from './FilePreviewDialog'
 
 export interface FileUploadProps {
@@ -50,8 +52,9 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
     // Cap at 15MB matching Swagger spec
     if (file.size > 15 * 1024 * 1024) {
-      toast.error('File size exceeds 15 MB limit.');
-      setLocalError('File size exceeds 15 MB limit.');
+      const tooLarge = i18n.t('errors.fileTooLarge');
+      toast.error(tooLarge);
+      setLocalError(tooLarge);
       return;
     }
 
@@ -66,15 +69,15 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         const url = res.data.readUrl || res.data.object;
         setUploadedUrl(url);
         setCompleted(true);
-        toast.success(`Uploaded ${file.name} successfully!`);
+        toast.success(i18n.t('messages.upload.success', { name: file.name }));
         // Trigger the callback with readUrl and objectPath
         onUploadComplete(url, res.data.object);
       } else {
-        throw new Error(res.error?.message || 'Upload failed');
+        throw res;
       }
     } catch (err: any) {
       console.error('File upload error:', err);
-      const msg = err.response?.data?.error?.message || err.message || 'File upload failed.';
+      const msg = apiErrorMessage(err, 'errors.action.upload');
       setLocalError(msg);
       toast.error(msg);
     } finally {

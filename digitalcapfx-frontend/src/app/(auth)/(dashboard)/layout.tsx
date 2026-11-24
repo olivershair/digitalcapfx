@@ -25,6 +25,7 @@ import {
     Lock
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { apiErrorMessage } from '@/lib/apiErrors'
 import SendMoneySheet from '@/components/pages/auth/_components/SendMoneySheet'
 import ReceiveMoneySheet from '@/components/pages/auth/_components/ReceiveMoneySheet'
 import FundCardSheet from '@/components/pages/auth/cards/FundCardSheet'
@@ -107,10 +108,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         if (profile && !isVerified) {
             const isAllowedPath = pathname.startsWith('/settings');
             if (!isAllowedPath) {
-                toast.error('Identity verification required. Complete your compliance verification to unlock all portal features.', {
+                toast.error(t('messages.kyc.locked'), {
                     id: 'kyc-protection-toast'
                 });
-                router.replace('/settings');
+                router.replace('/settings/verification');
             }
         }
     }, [profile, isVerified, pathname, router]);
@@ -130,16 +131,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         mutationFn: (code: string) => authService.verifyEmail(code),
         onSuccess: (data) => {
             if (data?.success) {
-                toast.success('Email verified successfully!');
+                toast.success(t('messages.email.verified'));
                 queryClient.invalidateQueries({ queryKey: ['profile'] });
             } else {
-                toast.error(data?.error?.message || 'Verification code is invalid.');
+                toast.error(apiErrorMessage(data, 'errors.action.verifyEmail'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to verify email.');
-            toast.error(msg);
+            toast.error(apiErrorMessage(err, 'errors.action.verifyEmail'));
         }
     });
 
@@ -147,23 +146,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         mutationFn: () => authService.resendOtp(),
         onSuccess: (data) => {
             if (data?.success) {
-                toast.success('New verification code sent to your email!');
+                toast.success(t('messages.email.codeResent'));
                 setTimer(30);
             } else {
-                toast.error(data?.error?.message || 'Failed to resend code.');
+                toast.error(apiErrorMessage(data, 'errors.action.resendCode'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to resend OTP.');
-            toast.error(msg);
+            toast.error(apiErrorMessage(err, 'errors.action.resendCode'));
         }
     });
 
     const handleVerifySubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (otpCode.length < 4) {
-            toast.error('Please enter a valid verification code.');
+            toast.error(t('messages.validation.code'));
             return;
         }
         verifyEmailMutation.mutate(otpCode);
@@ -317,10 +314,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     onClick={(e) => {
                                         if (!isVerified) {
                                             e.preventDefault();
-                                            toast.error(`Verification Required: Access to ${link.label} is locked until your identity verification is approved.`, {
+                                            toast.error(t('messages.kyc.navLocked', { page: link.label }), {
                                                 id: `nav-lock-${link.href}`
                                             });
-                                            router.push('/settings');
+                                            router.push('/settings/verification');
                                         }
                                     }}
                                     className={cn(
@@ -460,7 +457,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         </div>
                         {!['under_review', 'processing'].includes(normalizedKycStatus) && (
                             <Link
-                                href="/settings"
+                                href="/settings/verification"
                                 className="px-4.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500 hover:text-black text-amber-300 transition font-bold shrink-0 text-[10.5px] uppercase tracking-wider"
                             >
                                 {['submitted', 'draft', 'pending', 'idle'].includes(normalizedKycStatus)
@@ -490,7 +487,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                             </div>
 
                             <Link
-                                href="/settings"
+                                href="/settings/verification"
                                 className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-xl transition cursor-pointer"
                             >
                                 Complete Verification Now
@@ -549,10 +546,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                             onClick={(e) => {
                                                 if (!isVerified) {
                                                     e.preventDefault();
-                                                    toast.error(`Verification Required: Access to ${link.label} is locked until your identity verification is approved.`, {
+                                                    toast.error(t('messages.kyc.navLocked', { page: link.label }), {
                                                         id: `mobile-nav-lock-${link.href}`
                                                     });
-                                                    router.push('/settings');
+                                                    router.push('/settings/verification');
                                                 }
                                                 setMobileMenuOpen(false);
                                             }}

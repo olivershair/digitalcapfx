@@ -24,10 +24,10 @@ export default function AboutUsPage() {
     const handleSubscribe = (e: React.FormEvent) => {
         e.preventDefault()
         if (!newsletterEmail || !newsletterEmail.includes('@')) {
-            toast.error('Please enter a valid email address.')
+            toast.error(t('messages.validation.email'))
             return
         }
-        toast.success('Thank you for subscribing to DigitalCap FX updates!')
+        toast.success(t('messages.newsletter.subscribed'))
         setNewsletterEmail('')
     }
 

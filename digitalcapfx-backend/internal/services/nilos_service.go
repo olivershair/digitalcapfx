@@ -62,12 +62,15 @@ func (s *NilosService) GetLiveBalance(ctx context.Context, acc db.Account) (floa
 // scheme are not fully documented — the parser and verifier are permissive and
 // MUST be confirmed against the first real delivery (mismatches are logged).
 func (s *NilosService) HandleWebhook(ctx context.Context, body []byte, headers http.Header) error {
-	if s.webhookSecret != "" {
-		if !verifyNilosSignature(headers, body, []byte(s.webhookSecret)) {
-			s.logger.Warn("nilos webhook signature verification failed",
-				zap.Strings("x_headers", nilosSignatureHeaders(headers)))
-			return ErrNilosWebhookSignature
-		}
+	// SECURITY: fail closed — without a secret, anyone could forge a deposit.
+	if s.webhookSecret == "" {
+		s.logger.Error("nilos webhook rejected: NILOS_WEBHOOK_SECRET is not set")
+		return ErrWebhookNotConfigured
+	}
+	if !verifyNilosSignature(headers, body, []byte(s.webhookSecret)) {
+		s.logger.Warn("nilos webhook signature verification failed",
+			zap.Strings("x_headers", nilosSignatureHeaders(headers)))
+		return ErrNilosWebhookSignature
 	}
 
 	tx, ok := parseNilosDeposit(body)

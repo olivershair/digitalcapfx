@@ -85,16 +85,19 @@ func (h *PaymentsWebhookHandler) Receive(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Verify HMAC-SHA256 signature
-	if h.secret != "" {
-		sig := r.Header.Get("X-Webhook-Signature")
-		if !verifyPaymentsWebhookSignature(sig, body, h.secret) {
-			h.logger.Warn("payments webhook: invalid signature",
-				zap.String("sig", sig),
-			)
-			response.Unauthorized(w, "invalid webhook signature")
-			return
-		}
+	// Verify HMAC-SHA256 signature. SECURITY: fail closed — this webhook
+	// credits balances, so an unsigned delivery is never processed. 503 makes
+	// the provider retry until PAYMENTS_WEBHOOK_SECRET is configured.
+	if h.secret == "" {
+		h.logger.Error("payments webhook rejected: PAYMENTS_WEBHOOK_SECRET is not set")
+		response.WebhookSecretMissing(w, "payments (Rach WaaS)", "PAYMENTS_WEBHOOK_SECRET")
+		return
+	}
+	sig := r.Header.Get("X-Webhook-Signature")
+	if !verifyPaymentsWebhookSignature(sig, body, h.secret) {
+		h.logger.Warn("payments webhook: invalid signature")
+		response.WebhookSignatureInvalid(w, "payments (Rach WaaS)", "X-Webhook-Signature", "PAYMENTS_WEBHOOK_SECRET")
+		return
 	}
 
 	var payload PaymentsWebhookPayload

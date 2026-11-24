@@ -11,6 +11,8 @@ interface StepNavigationProps {
   livenessStepNumber: number;
   completionPercentage: number;
   stage: KycStage;
+  /** Manual KYC: the last step is "submit for review" instead of biometrics. */
+  isManual?: boolean;
 }
 
 export const StepNavigation: React.FC<StepNavigationProps> = ({
@@ -21,6 +23,7 @@ export const StepNavigation: React.FC<StepNavigationProps> = ({
   livenessStepNumber,
   completionPercentage,
   stage,
+  isManual = false,
 }) => {
   const { t } = useLanguageStore();
   const isSubmittedOrStarted = stage === 'submitted' || stage === 'identity_started';
@@ -123,7 +126,7 @@ export const StepNavigation: React.FC<StepNavigationProps> = ({
               {t('settings.verification.nav.stepProgress', { current: livenessStepNumber, total: totalSteps })}
             </span>
             <span className="text-xs font-bold block whitespace-normal break-words leading-snug">
-              {t('settings.verification.nav.step3')}
+              {isManual ? t('settings.verification.manual.navStep') : t('settings.verification.nav.step3')}
             </span>
           </div>
         </button>

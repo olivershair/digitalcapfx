@@ -75,7 +75,7 @@ export const DataBundleForm: React.FC<DataBundleFormProps> = ({ currency, isPend
 
         const selectedBundle = (DATA_BUNDLES[operator] || []).find(b => b.id === bundleId);
         if (!selectedBundle) {
-            toast.error('Invalid bundle selected.');
+            toast.error(t('messages.validation.bundle'));
             return;
         }
 

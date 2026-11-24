@@ -12,8 +12,40 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// APIError is a non-2xx answer from Brevo. Code/Message come from Brevo's JSON
+// error body ({"code":"…","message":"…"}) when present.
+type APIError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("sms: brevo status %d (%s): %s", e.Status, e.Code, e.Message)
+}
+
+// RecipientRejected reports whether Brevo refused THIS message/recipient
+// (bad or unsupported number / destination): retrying will not help, the
+// customer must use another number or channel. Auth (401/403), credits (402)
+// and rate-limit (429) problems are platform-side and NOT reported here.
+func (e *APIError) RecipientRejected() bool {
+	return e.Status == http.StatusBadRequest || e.Status == http.StatusNotFound ||
+		e.Status == http.StatusUnprocessableEntity
+}
+
+// PlatformProblem reports a configuration/account issue on our side
+// (invalid key, no credits, blocked IP, rate limit) that ops must fix.
+func (e *APIError) PlatformProblem() bool {
+	switch e.Status {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	}
+	return false
+}
 
 const defaultBaseURL = "https://api.brevo.com/v3"
 
@@ -53,8 +85,8 @@ type smsRequest struct {
 
 // smsResponse is the success body returned by Brevo (we only need the reference).
 type smsResponse struct {
-	Reference   string `json:"reference"`
-	MessageID   int64  `json:"messageId"`
+	Reference        string  `json:"reference"`
+	MessageID        int64   `json:"messageId"`
 	RemainingCredits float64 `json:"remainingCredits"`
 }
 
@@ -96,7 +128,17 @@ func (c *Client) Send(ctx context.Context, recipient, message, tag string) error
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("sms: brevo status %d: %s", resp.StatusCode, string(body))
+		apiErr := &APIError{Status: resp.StatusCode}
+		var b struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &b) == nil && (b.Code != "" || b.Message != "") {
+			apiErr.Code, apiErr.Message = b.Code, b.Message
+		} else {
+			apiErr.Message = strings.TrimSpace(string(body))
+		}
+		return apiErr
 	}
 
 	return nil
@@ -106,4 +148,10 @@ func (c *Client) Send(ctx context.Context, recipient, message, tag string) error
 func (c *Client) SendOTP(ctx context.Context, phone, appName, code string) error {
 	msg := fmt.Sprintf("Your %s verification code is: %s. Valid for 10 minutes. Do not share this code.", appName, code)
 	return c.Send(ctx, phone, msg, "otp")
+}
+
+// WithBaseURL points the client at another endpoint (tests, regional proxy).
+func (c *Client) WithBaseURL(u string) *Client {
+	c.baseURL = strings.TrimRight(u, "/")
+	return c
 }

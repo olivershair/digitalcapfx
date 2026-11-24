@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	hub2client "github.com/rachfinance/digitalfx/internal/clients/hub2"
+	"github.com/rachfinance/digitalfx/internal/pkg/redact"
 	"github.com/rachfinance/digitalfx/internal/pkg/response"
 	"github.com/rachfinance/digitalfx/internal/services"
 )
@@ -48,7 +49,6 @@ func (h *WebhookHandler) HUB2(w http.ResponseWriter, r *http.Request) {
 	sig := r.Header.Get("X-Hub2-Signature")
 	if !hub2client.VerifySignature(body, sig, h.hub2Secret) {
 		h.logger.Warn("hub2 webhook: invalid signature",
-			zap.String("sig_header", sig),
 			zap.String("remote_addr", r.RemoteAddr),
 		)
 		response.Forbidden(w, "invalid webhook signature")
@@ -65,7 +65,7 @@ func (h *WebhookHandler) HUB2(w http.ResponseWriter, r *http.Request) {
 		zap.String("reference", payload.Reference),
 		zap.String("status", payload.Status),
 		zap.String("type", payload.Type),
-		zap.String("phone", payload.Phone),
+		zap.String("phone", redact.Phone(payload.Phone)),
 		zap.Float64("amount", payload.Amount),
 		zap.String("currency", payload.Currency),
 	)

@@ -18,6 +18,7 @@ import { calculateCaasFee, calculateCaasRecipientReceives, calculateCaasTotalReq
 import { SendMoneyForm } from './send/SendMoneyForm'
 import { SendMoneyReview } from './send/SendMoneyReview'
 import { SendMoneySuccess } from './send/SendMoneySuccess'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export interface Wallet {
     id: string;
@@ -358,7 +359,7 @@ export const SendMoneySheet: React.FC = () => {
         },
         onError: (err: any) => {
             console.error('Quote preview error:', err);
-            toast.error(err.response?.data?.error?.message || 'Failed to preview withdrawal rates.');
+            toast.error(apiErrorMessage(err, 'errors.action.previewRates'));
         }
     });
 
@@ -391,11 +392,11 @@ export const SendMoneySheet: React.FC = () => {
     const deleteBeneficiaryMutation = useMutation({
         mutationFn: (id: string) => withdrawalService.deleteBeneficiary(id),
         onSuccess: () => {
-            toast.success('Beneficiary removed.');
+            toast.success(t('messages.beneficiary.removed'));
             setSelectedBeneficiaryId(null);
             queryClient.invalidateQueries({ queryKey: ['beneficiaries'] });
         },
-        onError: () => toast.error('Could not delete beneficiary.')
+        onError: (err: any) => toast.error(apiErrorMessage(err, 'errors.action.deleteBeneficiary'))
     });
 
     const sendCryptoMutation = useMutation({
@@ -410,12 +411,11 @@ export const SendMoneySheet: React.FC = () => {
                 queryClient.invalidateQueries({ queryKey: ['cryptoBalances'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
             } else {
-                toast.error(data?.error?.message || 'Send stablecoin failed.');
+                toast.error(apiErrorMessage(data, 'errors.action.send'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to send.');
+            const msg = apiErrorMessage(err, 'errors.action.send');
             toast.error(msg);
         }
     });
@@ -433,12 +433,11 @@ export const SendMoneySheet: React.FC = () => {
                 queryClient.invalidateQueries({ queryKey: ['waasWalletsDetails'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
             } else {
-                toast.error(data?.error?.message || 'On-chain transfer failed.');
+                toast.error(apiErrorMessage(data, 'errors.action.send'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to send on-chain.');
+            const msg = apiErrorMessage(err, 'errors.action.send');
             toast.error(msg);
         }
     });
@@ -461,7 +460,7 @@ export const SendMoneySheet: React.FC = () => {
             }
         },
         onError: (err: any) => {
-            toast.error(err.response?.data?.error?.message || 'Withdrawal execution failed.');
+            toast.error(apiErrorMessage(err, 'errors.action.withdraw'));
         }
     });
 
@@ -486,13 +485,13 @@ export const SendMoneySheet: React.FC = () => {
                 }
                 queryClient.invalidateQueries({ queryKey: ['accounts'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
-                toast.success('Mobile Money cash-out requested successfully!');
+                toast.success(t('messages.momo.cashoutRequested'));
             } else {
-                toast.error(data?.error?.message || 'Mobile Money cash-out request failed.');
+                toast.error(apiErrorMessage(data, 'errors.action.momoCashout'));
             }
         },
         onError: (err: any) => {
-            toast.error(err.response?.data?.error?.message || 'Mobile Money cash-out request failed.');
+            toast.error(apiErrorMessage(err, 'errors.action.momoCashout'));
         }
     });
 
@@ -512,7 +511,7 @@ export const SendMoneySheet: React.FC = () => {
             }
         },
         onError: (err: any) => {
-            toast.error(err.response?.data?.error?.message || 'Internal transfer failed. User might not exist.');
+            toast.error(apiErrorMessage(err, 'errors.action.internalTransfer'));
         }
     });
 
@@ -755,7 +754,7 @@ export const SendMoneySheet: React.FC = () => {
             // Standard Bank Wire Withdrawal
             if (recipientType === 'saved') {
                 if (!selectedBeneficiaryId) {
-                    toast.error('A beneficiary is required to initiate bank withdrawals.');
+                    toast.error(t('messages.validation.beneficiaryRequired'));
                     return;
                 }
                 withdrawMutation.mutate({
@@ -808,10 +807,10 @@ export const SendMoneySheet: React.FC = () => {
                 country: country || 'Senegal'
             });
             if (res?.success) {
-                toast.success('Beneficiary saved successfully.');
+                toast.success(t('messages.beneficiary.saved'));
             }
         } catch (e) {
-            toast.error('Failed to save beneficiary.');
+            toast.error(apiErrorMessage(e, 'errors.action.saveBeneficiary'));
         }
         setShowSaveBeneficiaryPrompt(false);
     };

@@ -1,0 +1,85 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: digitalfx
+      POSTGRES_USER: digitalfx
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}"
+    ports:
+      - "5436:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U digitalfx -d digitalfx"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    image: digitalcapfx-migrate:latest
+    build:
+      context: ./digitalcapfx-backend
+      dockerfile: Dockerfile.migrate
+    restart: "no"
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://digitalfx:${POSTGRES_PASSWORD}@db:5432/digitalfx?sslmode=disable"
+      - "up"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    image: digitalcapfx-backend:latest
+    build:
+      context: ./digitalcapfx-backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./digitalcapfx-backend/.env
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "postgres://digitalfx:${POSTGRES_PASSWORD}@db:5432/digitalfx?sslmode=disable"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    image: digitalcapfx-frontend:latest
+    build:
+      context: ./digitalcapfx-frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BACKEND_API_URL: http://backend:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:

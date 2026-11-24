@@ -1,12 +1,24 @@
 package email
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
+	"mime"
+	"mime/quotedprintable"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
+	"time"
+)
+
+const (
+	dialTimeout    = 15 * time.Second
+	sessionTimeout = 45 * time.Second
 )
 
 // Client sends transactional email via Brevo (smtp-relay.brevo.com:587, STARTTLS).
@@ -34,10 +46,18 @@ func New(host string, port int, fromName, from, user, password string) *Client {
 func (c *Client) Send(to, subject, htmlBody string) error {
 	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 
-	conn, err := net.Dial("tcp", addr)
+	// Validate the recipient before opening a connection.
+	rcpt, err := mail.ParseAddress(oneLine(to))
+	if err != nil {
+		return fmt.Errorf("email: invalid recipient %q: %w", to, err)
+	}
+
+	// Timeouts: a stuck relay must never hang the sending goroutine forever.
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return fmt.Errorf("email: dial %s: %w", addr, err)
 	}
+	_ = conn.SetDeadline(time.Now().Add(sessionTimeout))
 
 	cl, err := smtp.NewClient(conn, c.host)
 	if err != nil {
@@ -56,7 +76,7 @@ func (c *Client) Send(to, subject, htmlBody string) error {
 	if err := cl.Mail(c.from); err != nil {
 		return fmt.Errorf("email: MAIL FROM: %w", err)
 	}
-	if err := cl.Rcpt(to); err != nil {
+	if err := cl.Rcpt(rcpt.Address); err != nil {
 		return fmt.Errorf("email: RCPT TO: %w", err)
 	}
 
@@ -64,8 +84,12 @@ func (c *Client) Send(to, subject, htmlBody string) error {
 	if err != nil {
 		return fmt.Errorf("email: DATA: %w", err)
 	}
-	msg := buildRaw(c.fromName, c.from, to, subject, htmlBody)
-	if _, err := fmt.Fprint(w, msg); err != nil {
+	msg, err := buildRaw(c.fromName, c.from, rcpt.Address, subject, htmlBody, time.Now())
+	if err != nil {
+		_ = w.Close()
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
 		return fmt.Errorf("email: write body: %w", err)
 	}
 	if err := w.Close(); err != nil {
@@ -75,14 +99,45 @@ func (c *Client) Send(to, subject, htmlBody string) error {
 	return cl.Quit()
 }
 
-func buildRaw(fromName, from, to, subject, body string) string {
-	var b strings.Builder
-	b.WriteString("From: " + fromName + " <" + from + ">\r\n")
-	b.WriteString("To: " + to + "\r\n")
-	b.WriteString("Subject: " + subject + "\r\n")
+// oneLine removes CR/LF so a value can never inject extra mail headers
+// (subjects and names can contain customer-supplied data).
+func oneLine(v string) string {
+	v = strings.ReplaceAll(v, "\r", " ")
+	v = strings.ReplaceAll(v, "\n", " ")
+	return strings.TrimSpace(v)
+}
+
+// buildRaw assembles an RFC 5322 message:
+//   - headers are single-line and RFC 2047-encoded when non-ASCII (accented
+//     names, "✓"…), so they display correctly everywhere;
+//   - Date and Message-ID are set (their absence is a classic spam signal);
+//   - the HTML body is quoted-printable, which keeps every line under the SMTP
+//     998-character limit (long template lines otherwise get cut or rejected).
+func buildRaw(fromName, from, to, subject, body string, now time.Time) ([]byte, error) {
+	fromAddr := mail.Address{Name: oneLine(fromName), Address: oneLine(from)}
+	domain := "localhost"
+	if at := strings.LastIndex(fromAddr.Address, "@"); at >= 0 && at < len(fromAddr.Address)-1 {
+		domain = fromAddr.Address[at+1:]
+	}
+	idBytes := make([]byte, 12)
+	_, _ = rand.Read(idBytes)
+
+	var b bytes.Buffer
+	b.WriteString("From: " + fromAddr.String() + "\r\n")
+	b.WriteString("To: " + (&mail.Address{Address: oneLine(to)}).String() + "\r\n")
+	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", oneLine(subject)) + "\r\n")
+	b.WriteString("Date: " + now.Format(time.RFC1123Z) + "\r\n")
+	b.WriteString("Message-ID: <" + hex.EncodeToString(idBytes) + "." + strconv.FormatInt(now.UnixNano(), 36) + "@" + domain + ">\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
 	b.WriteString("\r\n")
-	b.WriteString(body)
-	return b.String()
+	qp := quotedprintable.NewWriter(&b)
+	if _, err := qp.Write([]byte(body)); err != nil {
+		return nil, fmt.Errorf("email: encode body: %w", err)
+	}
+	if err := qp.Close(); err != nil {
+		return nil, fmt.Errorf("email: encode body: %w", err)
+	}
+	return b.Bytes(), nil
 }

@@ -152,13 +152,18 @@ func (h *AccountHandler) GetTransactions(w http.ResponseWriter, r *http.Request)
 //	@Failure      404       {object}  ErrorResponse
 //	@Router       /accounts/{currency}/transactions/{id} [get]
 func (h *AccountHandler) GetTransaction(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		response.Unauthorized(w, "unauthorized")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		response.BadRequest(w, "INVALID_ID", "invalid transaction id")
 		return
 	}
 
-	tx, err := h.svc.Account.GetTransaction(r.Context(), id)
+	tx, err := h.svc.Account.GetTransaction(r.Context(), userID, id)
 	if err != nil {
 		response.NotFound(w, "transaction not found")
 		return

@@ -27,6 +27,8 @@ interface RegisterState {
 
   // OTP
   code: string;
+  /** Proof returned by POST /auth/otp/verify; required by POST /auth/register (60 min). */
+  phoneVerificationToken: string;
 
   // Actions
   setStep: (step: SignupStep) => void;
@@ -57,6 +59,7 @@ const initialState = {
   country: '',
   agree: false,
   code: '',
+  phoneVerificationToken: '',
 };
 
 export const useRegisterStore = create<RegisterState>((set) => ({

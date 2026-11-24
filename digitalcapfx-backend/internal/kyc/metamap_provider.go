@@ -58,7 +58,11 @@ func (p *MetaMapProvider) HandleWebhook(ctx context.Context, body []byte, header
 	mac.Write(body)
 	expectedMAC := hex.EncodeToString(mac.Sum(nil))
 
-	if signature != expectedMAC && p.webhookSecret != "" {
+	// SECURITY: fail closed and compare in constant time.
+	if p.webhookSecret == "" {
+		return nil, fmt.Errorf("metamap provider: METAMAP_WEBHOOK_SECRET is not configured")
+	}
+	if !hmac.Equal([]byte(signature), []byte(expectedMAC)) {
 		return nil, fmt.Errorf("metamap provider: invalid webhook signature")
 	}
 

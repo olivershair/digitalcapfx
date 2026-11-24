@@ -75,19 +75,19 @@ migrate-version:
 
 ## Start postgres + redis only (recommended for local dev)
 docker-db:
-	docker compose up -d db redis
+	docker compose -f ../docker-compose.yml up -d db redis
 
 ## Start all services (db, redis, app)
 docker-up:
-	docker compose up -d
+	docker compose -f ../docker-compose.yml up -d --build
 
 ## Stop and remove containers (data volume is preserved)
 docker-down:
-	docker compose down
+	docker compose -f ../docker-compose.yml down
 
 ## Tail logs for db and redis
 docker-logs:
-	docker compose logs -f db redis
+	docker compose -f ../docker-compose.yml logs -f db redis
 
 # ── Quality ───────────────────────────────────────────────────────────────────
 

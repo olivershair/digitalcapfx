@@ -23,7 +23,9 @@ import { StepNavigation } from './verification/StepNavigation'
 import { IntakeFieldsStep } from './verification/IntakeFieldsStep'
 import { ComplianceDocumentsStep } from './verification/ComplianceDocumentsStep'
 import { DiditVerificationStep } from './verification/DiditVerificationStep'
+import { ManualReviewStep } from './verification/ManualReviewStep'
 import { getValueForKey } from './verification/verificationUtils'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export const VerificationTab: React.FC = () => {
   const { t } = useLanguageStore();
@@ -77,6 +79,12 @@ export const VerificationTab: React.FC = () => {
 
   const kycResponse = kycStatusQuery.data as any;
   const kycData: KycStatusResponseData = (kycResponse?.data || kycResponse || {}) as KycStatusResponseData;
+
+  // Manual KYC (backend KYC_PROVIDER=manual): no vendor SDK — the customer
+  // uploads an ID + a selfie holding it and submits the file for staff review.
+  const isManual =
+    (reqData.verificationMode || reqData.verification_mode || kycData.verificationMode || kycData.verification_mode) === 'manual';
+  const [missingFromServer, setMissingFromServer] = useState<string[]>([]);
 
   // Determine stage strictly based on GET /kyc/status backend contract
   const stage: KycStage = useMemo(() => {
@@ -145,12 +153,15 @@ export const VerificationTab: React.FC = () => {
     }
   }, [kycDocsQuery.data]);
 
-  // Auto-launch Sumsub verification when entering Step 3 if not launched yet
+  // Auto-launch the vendor verification when entering the last step (never in
+  // manual mode: there, POST /kyc/init SUBMITS the file, so it must stay an
+  // explicit customer action).
   useEffect(() => {
+    if (isManual) return;
     if (mainStep === livenessStepNumber && !verificationLaunched && !initKycMutation.isPending) {
       initKycMutation.mutate();
     }
-  }, [mainStep, livenessStepNumber, verificationLaunched]);
+  }, [mainStep, livenessStepNumber, verificationLaunched, isManual]);
 
   // Group fields dynamically by group and sort by order
   const { groupedFields, groupKeys } = useMemo(() => {
@@ -282,11 +293,10 @@ export const VerificationTab: React.FC = () => {
   const handleManualSaveDraft = () => {
     saveDraftMutation.mutate(intakeForm, {
       onSuccess: () => {
-        toast.success('Draft progress saved successfully!');
+        toast.success(t('messages.kyc.draftSaved'));
       },
       onError: (err: any) => {
-        const rawError = err.response?.data?.error;
-        const msg = typeof rawError === 'object' ? rawError.message : (rawError || err.message || 'Failed to save draft.');
+        const msg = apiErrorMessage(err, 'errors.action.saveDraft');
         toast.error(msg);
       }
     });
@@ -296,15 +306,14 @@ export const VerificationTab: React.FC = () => {
   const submitIntakeMutation = useMutation({
     mutationFn: (payload: KYCIntakePayload) => kycService.submitIntake(payload),
     onSuccess: (res) => {
-      toast.success(res?.message || 'Intake fields saved successfully!');
+      toast.success(t('messages.kyc.intakeSaved'));
       queryClient.invalidateQueries({ queryKey: ['kycRequirements'] });
       queryClient.invalidateQueries({ queryKey: ['kycStatus'] });
       queryClient.invalidateQueries({ queryKey: ['profile'] });
     },
     onError: (err: any) => {
       console.error('Intake submission error:', err);
-      const rawError = err.response?.data?.error;
-      const msg = typeof rawError === 'object' ? (rawError.message || JSON.stringify(rawError)) : (rawError || err.message || 'Failed to submit intake fields.');
+      const msg = apiErrorMessage(err, 'errors.action.submitKyc');
       toast.error(msg);
     }
   });
@@ -324,16 +333,16 @@ export const VerificationTab: React.FC = () => {
     setDocUploadingKey(docKey);
     try {
       await kycService.submitDocument({
-        doc_type: docKey as any,
+        doc_type: docKey,
         doc_url: fileUrl
       });
       setUploadedDocUrls((prev) => ({ ...prev, [docKey]: fileUrl }));
-      toast.success('Document uploaded successfully!');
+      toast.success(t('messages.kyc.documentUploaded'));
       queryClient.invalidateQueries({ queryKey: ['kycDocuments'] });
       queryClient.invalidateQueries({ queryKey: ['kycStatus'] });
     } catch (err: any) {
       console.error('Document submission error:', err);
-      toast.error('Failed to submit document. Please try again.');
+      toast.error(apiErrorMessage(err, 'errors.action.uploadDocument'));
     } finally {
       setDocUploadingKey(null);
     }
@@ -362,19 +371,34 @@ export const VerificationTab: React.FC = () => {
       // link and showed a success toast, so a failed init looked identical to a
       // working one while producing a verification nobody could attribute.
       console.error('KYC init failed:', err);
-      const apiError = err?.response?.data?.error;
-      const apiErrorCode = typeof apiError === 'object' ? apiError?.code : undefined;
-      const apiErrorMessage = typeof apiError === 'object' ? apiError?.message : apiError;
-      const responseMessage = err?.response?.data?.message;
-      const detail = apiErrorCode === 'KYC_INTAKE_REQUIRED'
-        ? 'Complete and submit the KYC form before starting biometric verification.'
-        : (typeof apiErrorMessage === 'string' ? apiErrorMessage : undefined) ||
-          (typeof responseMessage === 'string' ? responseMessage : undefined) ||
-          t('settings.verification.toast.flowInitFailed') ||
-          'Impossible de démarrer la vérification pour le moment. Veuillez réessayer.';
+      const detail = apiErrorMessage(err, 'settings.verification.toast.flowInitFailed');
       setInitError(detail);
       setVerificationLaunched(false);
       toast.error(detail);
+    }
+  });
+
+  // Manual KYC: submit the complete file for staff review (POST /kyc/init).
+  const manualSubmitMutation = useMutation({
+    mutationFn: () => kycService.initKyc(),
+    onSuccess: (res) => {
+      setMissingFromServer([]);
+      toast.success(t('settings.verification.manual.submitted'));
+      queryClient.invalidateQueries({ queryKey: ['kycStatus'] });
+      queryClient.invalidateQueries({ queryKey: ['kycRequirements'] });
+      queryClient.invalidateQueries({ queryKey: ['profile'] });
+    },
+    onError: (err: any) => {
+      const data = err?.response?.data;
+      const code = data?.error?.code;
+      if (code === 'KYC_DOCUMENTS_MISSING') {
+        const list = data?.data?.missingDocuments || data?.data?.missing_documents || [];
+        setMissingFromServer(list.map((d: any) => d.label || d.key));
+      } else if (code === 'KYC_INTAKE_REQUIRED') {
+        setMainStep(1);
+      }
+      const msg = apiErrorMessage(err, 'settings.verification.manual.submitFailed');
+      toast.error(msg);
     }
   });
 
@@ -454,6 +478,7 @@ export const VerificationTab: React.FC = () => {
                 livenessStepNumber={livenessStepNumber}
                 completionPercentage={completionPercentage}
                 stage={stage}
+                isManual={isManual}
               />
 
               {/* STEP 1: Intake Information Fields */}
@@ -484,11 +509,26 @@ export const VerificationTab: React.FC = () => {
                   onDocumentUploadComplete={handleDocumentUploadComplete}
                   onProceedToBiometrics={() => setMainStep(livenessStepNumber)}
                   onBackToFields={() => setMainStep(1)}
+                  proceedLabel={isManual ? t('settings.verification.manual.proceed') : undefined}
+                />
+              )}
+
+              {/* LAST STEP (manual KYC): review checklist + submit for staff review */}
+              {mainStep === livenessStepNumber && isManual && (
+                <ManualReviewStep
+                  stepNumber={livenessStepNumber}
+                  documents={uploadableDocuments}
+                  uploadedDocUrls={uploadedDocUrls}
+                  intakeSubmitted={(kycData?.intake?.status || '').toLowerCase() === 'submitted' || stage === 'submitted' || stage === 'resubmit'}
+                  isSubmitting={manualSubmitMutation.isPending}
+                  missingFromServer={missingFromServer}
+                  onSubmit={() => manualSubmitMutation.mutate()}
+                  onBack={() => setMainStep(hasDocuments ? 2 : 1)}
                 />
               )}
 
               {/* STEP 3 / LIVENESS: Identity & Biometrics (Didit) */}
-              {mainStep === livenessStepNumber && (
+              {mainStep === livenessStepNumber && !isManual && (
                 <DiditVerificationStep
                   stage={stage}
                   livenessStepNumber={livenessStepNumber}

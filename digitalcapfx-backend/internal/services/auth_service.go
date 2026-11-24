@@ -26,6 +26,7 @@ import (
 	db "github.com/rachfinance/digitalfx/internal/db/sqlc"
 	"github.com/rachfinance/digitalfx/internal/pkg/email"
 	"github.com/rachfinance/digitalfx/internal/pkg/hash"
+	"github.com/rachfinance/digitalfx/internal/pkg/redact"
 	"github.com/rachfinance/digitalfx/internal/pkg/sms"
 	"github.com/rachfinance/digitalfx/internal/pkg/token"
 )
@@ -39,7 +40,14 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	ErrInvalidToken    = errors.New("invalid or expired token")
 	ErrSocialAuthUser  = errors.New("account uses social login — PIN not set")
+	ErrSMSDelivery     = errors.New("SMS delivery unavailable")
+	// ErrPhoneNotVerified: registration without a valid proof that the phone
+	// number was verified by SMS code (POST /auth/otp/verify).
+	ErrPhoneNotVerified = errors.New("phone number not verified: verify it with the SMS code before creating the account (the verification is valid for 60 minutes)")
 )
+
+// PhoneVerificationTTL is how long a verified phone can be used to register.
+const PhoneVerificationTTL = 60 * time.Minute
 
 // isNigerianCustomer reports whether a customer should be treated as Nigerian
 // (and therefore must provide a BVN to open a Nigerian bank account). Detected
@@ -78,8 +86,21 @@ func NewAuthService(pool *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, l
 
 func (s *AuthService) SendOTP(ctx context.Context, phone string) error {
 	q := db.New(s.pool)
+	phone = canonicalPhone(phone)
 
-	code := fmt.Sprintf("%06d", mrand.Intn(1000000))
+	// Refuse up front (explicit error, no code created) when SMS is known not
+	// to reach this country.
+	if err := s.checkSMSDestination(phone); err != nil {
+		return err
+	}
+	if err := s.allowSend(ctx, scopePhoneOTP, phone); err != nil {
+		return err
+	}
+
+	code, err := secureOTP()
+	if err != nil {
+		return err
+	}
 	expires := time.Now().Add(10 * time.Minute)
 
 	if _, err := q.CreateOTP(ctx, db.CreateOTPParams{
@@ -90,50 +111,49 @@ func (s *AuthService) SendOTP(ctx context.Context, phone string) error {
 		return fmt.Errorf("create otp: %w", err)
 	}
 
-	// Only log the plaintext OTP in debug builds — never leak real codes to
-	// production logs now that SMS delivery works.
-	if s.cfg.Server.Debug {
+	// SECURITY: never log a live code in production, even with DEBUG=true.
+	if s.cfg.Server.Debug && s.cfg.Server.Env != "production" {
 		s.logger.Info("GENERATED OTP (DEV/TESTING)",
 			zap.String("phone", phone),
 			zap.String("code", code),
 		)
 	}
 
-	// Deliver the OTP via Brevo transactional SMS.
-	if s.smsClient != nil {
-		go func() {
-			if err := s.smsClient.SendOTP(context.Background(), phone, s.cfg.App.Name, code); err != nil {
-				s.logger.Error("send OTP SMS failed (check Brevo account addons)",
-					zap.String("phone", phone),
-					zap.Error(err),
-				)
-			} else {
-				s.logger.Info("OTP SMS sent", zap.String("phone", phone))
-			}
-		}()
-	} else {
-		// No SMS client configured — log the code in development so devs can test.
-		s.logger.Warn("SMS client not configured; OTP will not be delivered",
-			zap.String("phone", phone),
-			zap.String("code", code),
-		)
+	if err := s.sendOTPSMS(ctx, phone, code); err != nil {
+		return err
 	}
 
+	s.logger.Info("OTP SMS sent", zap.String("phone", redact.Phone(phone)))
 	return nil
 }
 
-func (s *AuthService) VerifyOTP(ctx context.Context, phone, code string) error {
+// VerifyOTP checks the SMS code and returns a signed, 60-minute proof that this
+// phone number was verified. POST /auth/register requires that proof, so an
+// account can only be created for a number whose owner received the code.
+func (s *AuthService) VerifyOTP(ctx context.Context, phone, code string) (string, error) {
 	q := db.New(s.pool)
+	phone = canonicalPhone(phone)
+
+	if err := s.checkLocked(ctx, scopePhoneOTP, phone); err != nil {
+		return "", err
+	}
 
 	otp, err := q.GetValidOTP(ctx, db.GetValidOTPParams{
 		PhoneNumber: phone,
 		Code:        code,
 	})
 	if err != nil {
-		return ErrInvalidOTP
+		if lockErr := s.recordFailure(ctx, scopePhoneOTP, phone); lockErr != nil {
+			return "", lockErr
+		}
+		return "", ErrInvalidOTP
 	}
+	s.clearFailures(ctx, scopePhoneOTP, phone)
 
-	return q.MarkOTPUsed(ctx, otp.ID)
+	if err := q.MarkOTPUsed(ctx, otp.ID); err != nil {
+		return "", fmt.Errorf("mark otp used: %w", err)
+	}
+	return token.SignPhoneVerified(phone, s.cfg.JWT.Secret, PhoneVerificationTTL)
 }
 
 // ─── Register ─────────────────────────────────────────────────────────────────
@@ -146,8 +166,10 @@ type RegisterInput struct {
 	LastName    string
 	PIN         string
 	Country     string // ISO 3166-1 alpha-2
-	DeviceIP    string
-	DeviceUA    string
+	// PhoneVerificationToken is the proof returned by POST /auth/otp/verify.
+	PhoneVerificationToken string
+	DeviceIP               string
+	DeviceUA               string
 	// Business accounts only — company-level KYB fields collected at signup.
 	CompanyLegalName       string
 	CompanyRegistrationNo  string
@@ -163,6 +185,13 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (*token.Pa
 	// Normalize the phone so signup and login always match regardless of how
 	// the client formats it (spaces, dashes, missing "+").
 	in.Phone = normalizePhone(in.Phone)
+
+	// SECURITY: only the owner of the number (who received the SMS code) may
+	// create an account for it.
+	verifiedPhone, err := token.ParsePhoneVerified(in.PhoneVerificationToken, s.cfg.JWT.Secret)
+	if err != nil || normalizePhone(verifiedPhone) != in.Phone {
+		return nil, ErrPhoneNotVerified
+	}
 
 	if _, err := q.GetUserByPhoneAny(ctx, phoneCandidates(in.Phone)); err == nil {
 		return nil, ErrUserExists
@@ -294,9 +323,18 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*LoginResult, e
 	if user.PinHash == nil {
 		return nil, ErrSocialAuthUser
 	}
+	// Brute-force protection: the PIN is checked only while the account is not
+	// locked out, so a locked account cannot be probed at all.
+	if err := s.checkLocked(ctx, scopeLoginPIN, user.ID.String()); err != nil {
+		return nil, err
+	}
 	if !hash.CheckPIN(*user.PinHash, in.PIN) {
+		if lockErr := s.recordFailure(ctx, scopeLoginPIN, user.ID.String()); lockErr != nil {
+			return nil, lockErr
+		}
 		return nil, ErrInvalidPIN
 	}
+	s.clearFailures(ctx, scopeLoginPIN, user.ID.String())
 
 	// If the user has 2FA enabled, issue a short-lived signed pending token
 	// instead of a full session. The client must complete the TOTP step before
@@ -339,9 +377,16 @@ func (s *AuthService) CompleteTOTPLogin(ctx context.Context, ref, code, deviceIP
 	if err != nil || !sec.TOTPEnabled || sec.TOTPSecret == nil {
 		return nil, ErrInvalidToken
 	}
+	if err := s.checkLocked(ctx, scopeLoginTOTP, userID.String()); err != nil {
+		return nil, err
+	}
 	if !totp.Validate(code, *sec.TOTPSecret) {
+		if lockErr := s.recordFailure(ctx, scopeLoginTOTP, userID.String()); lockErr != nil {
+			return nil, lockErr
+		}
 		return nil, ErrInvalidToken
 	}
+	s.clearFailures(ctx, scopeLoginTOTP, userID.String())
 
 	pair, newDevice, err := s.createSession(ctx, q, user.ID, user.PhoneNumber, user.Role, user.AccountType, deviceIP, deviceUA)
 	if err != nil {
@@ -495,12 +540,12 @@ func (s *AuthService) EnsureOwners(ctx context.Context, phones []string) {
 		row, err := q.PromoteUserToOwnerByPhone(ctx, phone)
 		if err != nil {
 			s.logger.Warn("owner bootstrap: no user for phone (will retry next boot once they register)",
-				zap.String("phone", phone))
+				zap.String("phone", redact.Phone(phone)))
 			continue
 		}
 		s.logger.Info("owner bootstrap: promoted user to owner",
 			zap.String("user_id", row.ID.String()),
-			zap.String("phone", row.PhoneNumber),
+			zap.String("phone", redact.Phone(row.PhoneNumber)),
 		)
 	}
 }
@@ -508,7 +553,8 @@ func (s *AuthService) EnsureOwners(ctx context.Context, phones []string) {
 func (s *AuthService) RefreshToken(ctx context.Context, refreshToken string) (*token.Pair, error) {
 	q := db.New(s.pool)
 
-	claims, err := token.Parse(refreshToken, s.cfg.JWT.Secret)
+	// Only a refresh token may be exchanged (never an access / pending-2FA token).
+	claims, err := token.ParseRefresh(refreshToken, s.cfg.JWT.Secret)
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
@@ -521,13 +567,17 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshToken string) (*t
 	// Validate the refresh token against the stored hash — detects token theft.
 	rtHash := sha256Hex(refreshToken)
 	session, err := q.GetUserSessionByRefreshTokenHash(ctx, rtHash)
-	if err != nil {
+	if err != nil || session.UserID != userID {
 		return nil, ErrInvalidToken
 	}
 
 	user, err := q.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, ErrUserNotFound
+	}
+	// SECURITY: a disabled account must not be able to mint new tokens.
+	if !user.IsActive {
+		return nil, ErrAccountInactive
 	}
 
 	// Issue rotated pair with same session ID and role.
@@ -555,6 +605,14 @@ func (s *AuthService) ForgotPIN(ctx context.Context, emailOrPhone string) error 
 	var userEmail, firstName, otpAddress string
 	isPhone := !strings.Contains(emailOrPhone, "@")
 
+	// Explicit refusal for countries SMS cannot reach — checked before the
+	// account lookup so it reveals nothing about whether an account exists.
+	if isPhone {
+		if err := s.checkSMSDestination(canonicalPhone(emailOrPhone)); err != nil {
+			return err
+		}
+	}
+
 	if !isPhone {
 		u, err := q.GetUserByEmail(ctx, &emailOrPhone)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -581,17 +639,17 @@ func (s *AuthService) ForgotPIN(ctx context.Context, emailOrPhone string) error 
 			userEmail = *u.Email
 		}
 		firstName = u.FirstName
-		if s.smsClient == nil {
-			err := errors.New("SMS client is not configured")
-			s.logger.Error("send pin reset otp SMS", zap.Error(err))
-			return err
-		}
-
 		emailOrPhone = canonicalPhone(u.PhoneNumber)
 		otpAddress = emailOrPhone
 	}
 
-	code := fmt.Sprintf("%06d", mrand.Intn(1000000))
+	if err := s.allowSend(ctx, scopePINReset, otpAddress); err != nil {
+		return err
+	}
+	code, err := secureOTP()
+	if err != nil {
+		return err
+	}
 	if _, err := q.CreateEmailOTP(ctx, db.CreateEmailOTPParams{
 		Email:     otpAddress,
 		Code:      code,
@@ -603,9 +661,8 @@ func (s *AuthService) ForgotPIN(ctx context.Context, emailOrPhone string) error 
 	}
 
 	if isPhone {
-		if err := s.smsClient.SendOTP(ctx, emailOrPhone, s.cfg.App.Name, code); err != nil {
-			s.logger.Error("send pin reset otp SMS", zap.Error(err))
-			return fmt.Errorf("send pin reset otp SMS: %w", err)
+		if err := s.sendOTPSMS(ctx, emailOrPhone, code); err != nil {
+			return err
 		}
 	} else {
 		subj, html := email.PINResetOTP(userEmail, firstName, code)
@@ -662,14 +719,21 @@ func (s *AuthService) ResetPIN(ctx context.Context, in ResetPINInput) error {
 		user = u
 	}
 
+	if err := s.checkLocked(ctx, scopePINReset, user.ID.String()); err != nil {
+		return err
+	}
 	otp, err := q.GetValidEmailOTP(ctx, db.GetValidEmailOTPParams{
 		Email:   otpAddress,
 		Code:    in.OTPCode,
 		Purpose: "pin_reset",
 	})
 	if err != nil {
+		if lockErr := s.recordFailure(ctx, scopePINReset, user.ID.String()); lockErr != nil {
+			return lockErr
+		}
 		return ErrInvalidOTP
 	}
+	s.clearFailures(ctx, scopePINReset, user.ID.String())
 
 	_ = q.MarkEmailOTPUsed(ctx, otp.ID)
 
@@ -776,14 +840,21 @@ func (s *AuthService) VerifyEmail(ctx context.Context, userID uuid.UUID, code st
 		return fmt.Errorf("no email on account")
 	}
 
+	if err := s.checkLocked(ctx, scopeEmailOTP, user.ID.String()); err != nil {
+		return err
+	}
 	otp, err := q.GetValidEmailOTP(ctx, db.GetValidEmailOTPParams{
 		Email:   *user.Email,
 		Code:    code,
 		Purpose: "verify_email",
 	})
 	if err != nil {
+		if lockErr := s.recordFailure(ctx, scopeEmailOTP, user.ID.String()); lockErr != nil {
+			return lockErr
+		}
 		return ErrInvalidOTP
 	}
+	s.clearFailures(ctx, scopeEmailOTP, user.ID.String())
 
 	_ = q.MarkEmailOTPUsed(ctx, otp.ID)
 
@@ -991,7 +1062,10 @@ func (s *AuthService) notifyAdminNewSignup(firstName, lastName, phone string, cu
 
 func (s *AuthService) sendEmailVerificationOTP(ctx context.Context, toEmail, firstName string) error {
 	q := db.New(s.pool)
-	code := fmt.Sprintf("%06d", mrand.Intn(1000000))
+	code, err := secureOTP()
+	if err != nil {
+		return err
+	}
 	if _, err := q.CreateEmailOTP(ctx, db.CreateEmailOTPParams{
 		Email:     toEmail,
 		Code:      code,

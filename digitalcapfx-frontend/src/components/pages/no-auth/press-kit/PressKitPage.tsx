@@ -21,16 +21,16 @@ export default function PressKitPage() {
     const [newsletterEmail, setNewsletterEmail] = useState('')
 
     const handleDownloadAssets = (assetType: string) => {
-        toast.success(`Downloading DigitalCap FX ${assetType}...`)
+        toast.success(t('messages.press.downloading', { asset: assetType }))
     }
 
     const handleNewsletterSubscribe = (e: React.FormEvent) => {
         e.preventDefault()
         if (!newsletterEmail || !newsletterEmail.includes('@')) {
-            toast.error('Please enter a valid email address.')
+            toast.error(t('messages.validation.email'))
             return
         }
-        toast.success('Thank you for subscribing to DigitalCap FX updates!')
+        toast.success(t('messages.newsletter.subscribed'))
         setNewsletterEmail('')
     }
 

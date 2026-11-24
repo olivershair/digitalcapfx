@@ -15,6 +15,7 @@ import { FEATURE_FLAGS } from '@/config/featureFlags'
 import { PhoneSendForm } from './phone-send/PhoneSendForm'
 import { PhoneSendConfirm } from './phone-send/PhoneSendConfirm'
 import { PhoneSendSuccess } from './phone-send/PhoneSendSuccess'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 interface PhoneSendProps {
     isSheet?: boolean;
@@ -121,12 +122,11 @@ const PhoneSend: React.FC<PhoneSendProps> = ({ isSheet = false, onClose }) => {
                 queryClient.invalidateQueries({ queryKey: ['cryptoBalances'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
             } else {
-                toast.error(data?.error?.message || t('phone.send.toast.sendFailed'));
+                toast.error(apiErrorMessage(data, 'phone.send.toast.sendFailed'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || t('phone.send.toast.failedToSend'));
+            const msg = apiErrorMessage(err, 'phone.send.toast.failedToSend');
             toast.error(msg);
         }
     });

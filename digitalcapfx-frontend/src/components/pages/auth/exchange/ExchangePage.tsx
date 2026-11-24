@@ -17,6 +17,7 @@ import { LiveRatesCard } from './components/LiveRatesCard'
 import { RecentConversionsCard } from './components/RecentConversionsCard'
 import { ExchangeConfirmationModal } from './components/ExchangeConfirmationModal'
 import { ExchangeSuccessModal } from './components/ExchangeSuccessModal'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 const CURRENCY_NAMES: Record<string, string> = {
     // USD: 'US Dollar',
@@ -299,7 +300,7 @@ export const ExchangePage: React.FC = () => {
         const interval = setInterval(() => {
             setConfirmTimer((prev) => {
                 if (prev <= 1) {
-                    toast.error('Quote expired. Please request a new quote.');
+                    toast.error(t('errors.quoteExpired'));
                     setIsConfirmOpen(false);
                     return 30;
                 }
@@ -322,12 +323,11 @@ export const ExchangePage: React.FC = () => {
                 setConfirmTimer(30);
                 setIsConfirmOpen(true);
             } else {
-                toast.error(data?.error?.message || 'Failed to request lock quote.');
+                toast.error(apiErrorMessage(data, 'errors.quoteError'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to generate quote.');
+            const msg = apiErrorMessage(err, 'errors.quoteError');
             toast.error(msg);
         }
     });
@@ -354,14 +354,13 @@ export const ExchangePage: React.FC = () => {
                 queryClient.invalidateQueries({ queryKey: ['accounts'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
                 queryClient.invalidateQueries({ queryKey: ['exchangeHistory'] });
-                toast.success(`Swapped ${amtIn} ${tokenIn} to ${amtOut} ${tokenOut}`);
+                toast.success(t('messages.exchange.swapped', { amountIn: amtIn, tokenIn, amountOut: amtOut, tokenOut }));
             } else {
-                toast.error(data?.error?.message || 'Failed to execute CaaS swap.');
+                toast.error(apiErrorMessage(data, 'errors.swapFailed'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to execute CaaS swap.');
+            const msg = apiErrorMessage(err, 'errors.swapFailed');
             toast.error(msg);
         }
     });
@@ -383,12 +382,11 @@ export const ExchangePage: React.FC = () => {
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
                 queryClient.invalidateQueries({ queryKey: ['exchangeHistory'] });
             } else {
-                toast.error(data?.error?.message || 'Failed to execute conversion.');
+                toast.error(apiErrorMessage(data, 'errors.action.convert'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to convert.');
+            const msg = apiErrorMessage(err, 'errors.action.convert');
             toast.error(msg);
         }
     });
@@ -411,12 +409,11 @@ export const ExchangePage: React.FC = () => {
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
                 queryClient.invalidateQueries({ queryKey: ['exchangeHistory'] });
             } else {
-                toast.error(data?.error?.message || 'Failed to execute swap.');
+                toast.error(apiErrorMessage(data, 'errors.action.convert'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || 'Failed to convert.');
+            const msg = apiErrorMessage(err, 'errors.action.convert');
             toast.error(msg);
         }
     });
@@ -444,7 +441,7 @@ export const ExchangePage: React.FC = () => {
             setIsConfirmOpen(true);
         } else if (isCryptoSwap) {
             if (!cryptoRateQuery.data?.success || !cryptoRateQuery.data.data) {
-                toast.error('No swap rate quote available. Please wait a moment.');
+                toast.error(t('messages.exchange.noQuote'));
                 return;
             }
             const q = cryptoRateQuery.data.data;

@@ -10,10 +10,14 @@ import { useMutation } from '@tanstack/react-query'
 import { authService } from '@/services/auth.service'
 import { toast } from 'sonner'
 import { isValidPhoneNumber } from 'react-phone-number-input'
+import { useLanguageStore } from '@/store/languageStore'
+import { smsErrorMessage } from '@/lib/smsErrors'
 
 import Link from 'next/link'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export const PhoneVerifyStep: React.FC = () => {
+  const { t, language } = useLanguageStore();
   const {
     phone,
     updateCredentials,
@@ -47,25 +51,26 @@ export const PhoneVerifyStep: React.FC = () => {
     mutationFn: (phoneNum: string) => authService.sendPhoneOtp(phoneNum),
     onSuccess: (data) => {
       if (data?.success) {
-        toast.success('Verification code successfully dispatched!');
+        toast.success(t('messages.sms.codeSent'));
         setCodeSent(true);
         setTimer(300);
         setResendCooldown(false);
       } else {
-        const rawError = data?.error;
-        const msg = typeof rawError === 'object'
-          ? (rawError.message || JSON.stringify(rawError))
-          : (rawError || 'Failed to dispatch SMS code.');
+        const msg = apiErrorMessage(data, 'errors.action.sendSms');
         setErrorMsg(msg);
         toast.error(msg);
       }
     },
     onError: (err: any) => {
       console.error('Send OTP Error:', err);
-      const rawError = err.response?.data?.error;
-      const msg = typeof rawError === 'object'
-        ? (rawError.message || JSON.stringify(rawError))
-        : (rawError || err.response?.data?.message || 'Could not dispatch SMS verification code.');
+      // Explicit, translated message when SMS cannot reach this number/country.
+      const smsMsg = smsErrorMessage(err, phone, t, language);
+      if (smsMsg) {
+        setErrorMsg(smsMsg);
+        toast.error(smsMsg);
+        return;
+      }
+      const msg = apiErrorMessage(err, 'errors.action.sendSms');
       setErrorMsg(msg);
       toast.error(msg);
     }
@@ -77,23 +82,20 @@ export const PhoneVerifyStep: React.FC = () => {
       authService.verifyPhoneOtp(payload.phone, payload.code),
     onSuccess: (data) => {
       if (data?.success) {
-        toast.success('Phone number verified successfully!');
+        // Keep the signed proof: POST /auth/register requires it (valid 60 min).
+        const proof = data?.data?.verificationToken || data?.data?.verification_token || '';
+        updateCredentials({ phoneVerificationToken: proof });
+        toast.success(t('messages.sms.phoneVerified'));
         setStep('account-type');
       } else {
-        const rawError = data?.error;
-        const msg = typeof rawError === 'object'
-          ? (rawError.message || JSON.stringify(rawError))
-          : (rawError || 'Incorrect verification code.');
+        const msg = apiErrorMessage(data, 'errors.invalidOtp');
         setErrorMsg(msg);
         toast.error(msg);
       }
     },
     onError: (err: any) => {
       console.error('Verify OTP Error:', err);
-      const rawError = err.response?.data?.error;
-      const msg = typeof rawError === 'object'
-        ? (rawError.message || JSON.stringify(rawError))
-        : (rawError || err.response?.data?.message || 'Incorrect verification code.');
+      const msg = apiErrorMessage(err, 'errors.invalidOtp');
       setErrorMsg(msg);
       toast.error(msg);
     }
@@ -105,11 +107,11 @@ export const PhoneVerifyStep: React.FC = () => {
     setPhoneError('');
 
     if (!phone) {
-      setPhoneError('Phone number is required');
+      setPhoneError(t('messages.validation.phoneRequired'));
       return;
     }
     if (!isValidPhoneNumber(phone)) {
-      setPhoneError('Please enter a valid phone number');
+      setPhoneError(t('messages.validation.phoneInvalid'));
       return;
     }
 

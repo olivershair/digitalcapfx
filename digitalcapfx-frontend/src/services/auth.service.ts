@@ -8,6 +8,8 @@ export interface RegisterRequest {
   phone: string;
   pin: string;
   country: string;
+  /** verification token from POST /auth/otp/verify (same phone, valid 60 min). */
+  phoneVerificationToken: string;
   companyLegalName?: string;
   companyRegistrationNo?: string;
   industry?: string;

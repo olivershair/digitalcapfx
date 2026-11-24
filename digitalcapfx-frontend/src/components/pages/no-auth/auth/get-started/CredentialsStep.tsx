@@ -16,6 +16,8 @@ import { authService, RegisterRequest } from '@/services/auth.service'
 import { useFormErrors } from '@/hooks/useFormErrors'
 import { toast } from 'sonner'
 import { isValidPhoneNumber } from 'react-phone-number-input'
+import { apiErrorMessage } from '@/lib/apiErrors'
+import { useLanguageStore } from '@/store/languageStore'
 
 const enLabels = en as Record<string, string>;
 const COUNTRY_OPTIONS: SelectOption[] = getCountries()
@@ -27,6 +29,7 @@ const COUNTRY_OPTIONS: SelectOption[] = getCountries()
 
 export const CredentialsStep: React.FC = () => {
   const router = useRouter();
+  const { t } = useLanguageStore();
   const {
     accountType,
     firstName,
@@ -44,7 +47,8 @@ export const CredentialsStep: React.FC = () => {
     annualRevenue,
     website,
     updateCredentials,
-    setStep
+    setStep,
+    phoneVerificationToken
   } = useRegisterStore();
 
   const { errors, setErrors, errorMsg, setErrorMsg, clearFieldError } = useFormErrors();
@@ -54,7 +58,7 @@ export const CredentialsStep: React.FC = () => {
     mutationFn: (payload: RegisterRequest) => authService.register(payload),
     onSuccess: (data) => {
       if (data?.success) {
-        toast.success('Registration successful!');
+        toast.success(t('messages.register.success'));
         if (data.data?.accountType) {
           localStorage.setItem('account_type', data.data.accountType);
         }
@@ -64,20 +68,23 @@ export const CredentialsStep: React.FC = () => {
           router.push('/dashboard');
         }
       } else {
-        const rawError = data?.error;
-        const msg = typeof rawError === 'object'
-          ? (rawError.message || JSON.stringify(rawError))
-          : (rawError || 'Registration failed');
+        const msg = apiErrorMessage(data, 'errors.action.register');
         setErrorMsg(msg);
         toast.error(msg);
       }
     },
     onError: (err: any) => {
       console.error('Registration Mutation Error:', err);
-      const rawError = err.response?.data?.error;
-      const msg = typeof rawError === 'object'
-        ? (rawError.message || JSON.stringify(rawError))
-        : (rawError || err.response?.data?.message || 'An unexpected error occurred during signup.');
+      // Phone proof missing/expired (60 min) or phone changed: verify again.
+      if (err?.response?.data?.error?.code === 'PHONE_NOT_VERIFIED') {
+        const msg = t('errors.phoneNotVerified');
+        updateCredentials({ phoneVerificationToken: '' });
+        setErrorMsg(msg);
+        toast.error(msg);
+        setStep('phone-verify');
+        return;
+      }
+      const msg = apiErrorMessage(err, 'errors.action.register');
       setErrorMsg(msg);
       toast.error(msg);
     }
@@ -91,50 +98,50 @@ export const CredentialsStep: React.FC = () => {
 
     // First Name check
     if (!firstName.trim()) {
-      newErrors.firstName = 'First name is required';
+      newErrors.firstName = t('messages.validation.firstName');
     }
 
     // Last Name check
     if (!lastName.trim()) {
-      newErrors.lastName = 'Last name is required';
+      newErrors.lastName = t('messages.validation.lastName');
     }
 
     // Email check
     if (!email.trim()) {
-      newErrors.email = 'Email address is required';
+      newErrors.email = t('messages.validation.emailRequired');
     } else if (!/\S+@\S+\.\S+/.test(email)) {
-      newErrors.email = 'Please enter a valid email address';
+      newErrors.email = t('messages.validation.email');
     }
 
     // Phone check
     if (!phone) {
-      newErrors.phone = 'Phone number is required';
+      newErrors.phone = t('messages.validation.phoneRequired');
     } else if (!isValidPhoneNumber(phone)) {
-      newErrors.phone = 'Please enter a valid international phone number';
+      newErrors.phone = t('messages.validation.phoneInvalid');
     }
 
     // PIN check
     if (!pin.trim()) {
-      newErrors.pin = 'PIN is required';
+      newErrors.pin = t('messages.validation.pinRequired');
     } else if (pin.length !== 6) {
-      newErrors.pin = 'PIN must be exactly 6 digits';
+      newErrors.pin = t('messages.validation.pinLength');
     }
 
     // Confirm PIN check
     if (!confirmPin.trim()) {
-      newErrors.confirmPin = 'Please confirm your PIN';
+      newErrors.confirmPin = t('messages.validation.pinConfirm');
     } else if (confirmPin !== pin) {
-      newErrors.confirmPin = 'PINs do not match';
+      newErrors.confirmPin = t('messages.validation.pinMismatch');
     }
 
     // Country check
     if (!country) {
-      newErrors.country = 'Country selection is required';
+      newErrors.country = t('messages.validation.country');
     }
 
     // Agree checkbox check
     if (!agree) {
-      setErrorMsg('You must agree to the Terms of Service and Privacy Policy');
+      setErrorMsg(t('messages.validation.terms'));
     }
 
     setErrors(newErrors);
@@ -149,6 +156,7 @@ export const CredentialsStep: React.FC = () => {
       phone,
       pin,
       country,
+      phoneVerificationToken,
       ...(accountType === 'business' ? {
         companyLegalName: companyName,
         companyRegistrationNo: companyRegNo,

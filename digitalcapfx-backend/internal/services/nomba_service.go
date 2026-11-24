@@ -19,6 +19,12 @@ import (
 // signature verification; the HTTP handler maps it to 401.
 var ErrNombaWebhookSignature = errors.New("invalid nomba webhook signature")
 
+// ErrWebhookNotConfigured is returned by a webhook receiver whose signing
+// secret is not set. Webhooks that move money FAIL CLOSED: an unsigned
+// delivery is never processed. Handlers map it to 503 so the provider keeps
+// retrying until the secret is configured (no deposit is lost).
+var ErrWebhookNotConfigured = errors.New("webhook signing secret not configured")
+
 // NombaService owns the Nigerian NGN rails backed by Nomba: inbound credits to
 // virtual accounts (via webhook), bank-code + name lookups, and NGN payouts.
 type NombaService struct {
@@ -103,13 +109,16 @@ func (s *NombaService) HandleWebhook(ctx context.Context, body []byte, headers h
 		return fmt.Errorf("parse nomba webhook: %w", err)
 	}
 
-	if s.webhookSecret != "" {
-		if !nomba.VerifyWebhookSignature(headers, ev, s.webhookSecret) {
-			s.logger.Warn("nomba webhook signature verification failed",
-				zap.String("event", ev.EventType),
-				zap.String("request_id", ev.RequestID))
-			return ErrNombaWebhookSignature
-		}
+	// SECURITY: fail closed — without a secret, anyone could forge a credit.
+	if s.webhookSecret == "" {
+		s.logger.Error("nomba webhook rejected: NOMBA_WEBHOOK_SECRET is not set")
+		return ErrWebhookNotConfigured
+	}
+	if !nomba.VerifyWebhookSignature(headers, ev, s.webhookSecret) {
+		s.logger.Warn("nomba webhook signature verification failed",
+			zap.String("event", ev.EventType),
+			zap.String("request_id", ev.RequestID))
+		return ErrNombaWebhookSignature
 	}
 
 	s.logger.Info("nomba webhook received",

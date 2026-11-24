@@ -17,6 +17,7 @@ import { momoService } from '@/services/momo.service'
 // Import subcomponents
 import { ReceiveDetailsView } from './receive/ReceiveDetailsView'
 import { ReceiveMomoView } from './receive/ReceiveMomoView'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export interface Wallet {
     id: string;
@@ -270,11 +271,11 @@ export const ReceiveMoneySheet: React.FC = () => {
                 queryClient.invalidateQueries({ queryKey: ['cryptoBalances'] });
                 queryClient.invalidateQueries({ queryKey: ['activity'] });
             } else {
-                toast.error(res?.error?.message || t('receive.toast.failed'));
+                toast.error(apiErrorMessage(res, 'receive.toast.failed'));
             }
         },
         onError: (err: any) => {
-            toast.error(err.response?.data?.error?.message || t('receive.toast.failedRetry'));
+            toast.error(apiErrorMessage(err, 'receive.toast.failedRetry'));
         }
     });
 

@@ -104,3 +104,44 @@ func ServiceUnavailable(w http.ResponseWriter, message string) {
 		Error:   &Error{Code: "SERVICE_UNAVAILABLE", Message: message},
 	})
 }
+
+// TooManyRequests answers 429 — used when an identity is temporarily locked
+// out after too many failed PIN/OTP attempts or too many codes requested.
+func TooManyRequests(w http.ResponseWriter, message string) {
+	JSON(w, http.StatusTooManyRequests, Envelope{
+		Success: false,
+		Error:   &Error{Code: "TOO_MANY_ATTEMPTS", Message: message},
+	})
+}
+
+// WebhookSecretMissing answers 503 with an explicit error naming the server
+// environment variable that must be configured. The webhook processed nothing;
+// 503 makes the provider retry, so no delivery is lost once the secret is set.
+// Only the variable NAME is returned — never a secret value.
+func WebhookSecretMissing(w http.ResponseWriter, webhook, envVar string) {
+	JSON(w, http.StatusServiceUnavailable, Envelope{
+		Success: false,
+		Error: &Error{
+			Code: "WEBHOOK_SECRET_MISSING",
+			Message: "the " + webhook + " webhook is disabled because the server secret " + envVar +
+				" is not configured — set " + envVar + " in the backend environment (Secret Manager) and redeploy; " +
+				"no delivery is processed until then",
+		},
+		Data: map[string]string{"webhook": webhook, "missing_secret": envVar},
+	})
+}
+
+// WebhookSignatureInvalid answers 401 with an explicit error naming the header
+// that was checked and the secret it is verified against.
+func WebhookSignatureInvalid(w http.ResponseWriter, webhook, header, envVar string) {
+	JSON(w, http.StatusUnauthorized, Envelope{
+		Success: false,
+		Error: &Error{
+			Code: "WEBHOOK_SIGNATURE_INVALID",
+			Message: "the " + webhook + " webhook signature is missing or invalid: header " + header +
+				" must be the HMAC-SHA256 of the raw body keyed with " + envVar +
+				" — check that the secret configured on the provider matches the server's " + envVar,
+		},
+		Data: map[string]string{"webhook": webhook, "signature_header": header, "secret": envVar},
+	})
+}

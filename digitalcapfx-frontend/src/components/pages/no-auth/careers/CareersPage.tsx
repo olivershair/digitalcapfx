@@ -123,16 +123,16 @@ export default function CareersPage() {
     }, [selectedDepartment])
 
     const handleApplyRole = (roleTitle: string) => {
-        toast.info(`Opening application form for: ${roleTitle}`)
+        toast.info(t('messages.careers.opening', { role: roleTitle }))
     }
 
     const handleNewsletterSubscribe = (e: React.FormEvent) => {
         e.preventDefault()
         if (!newsletterEmail || !newsletterEmail.includes('@')) {
-            toast.error('Please enter a valid email address.')
+            toast.error(t('messages.validation.email'))
             return
         }
-        toast.success('Thank you for subscribing to DigitalCap FX updates!')
+        toast.success(t('messages.newsletter.subscribed'))
         setNewsletterEmail('')
     }
 

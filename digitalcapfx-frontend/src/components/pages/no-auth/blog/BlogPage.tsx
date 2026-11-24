@@ -158,16 +158,16 @@ export default function BlogPage() {
     }, [selectedCategory, searchQuery])
 
     const handleArticleClick = (title: string) => {
-        toast.info(`Opening article: "${title}"`)
+        toast.info(t('messages.blog.opening', { title }))
     }
 
     const handleNewsletterSubscribe = (e: React.FormEvent) => {
         e.preventDefault()
         if (!newsletterEmail || !newsletterEmail.includes('@')) {
-            toast.error('Please enter a valid email address.')
+            toast.error(t('messages.validation.email'))
             return
         }
-        toast.success('Thank you for subscribing to DigitalCap FX updates!')
+        toast.success(t('messages.newsletter.subscribed'))
         setNewsletterEmail('')
     }
 

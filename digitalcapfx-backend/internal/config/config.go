@@ -39,7 +39,7 @@ type Config struct {
 	MetaMap     MetaMapConfig
 	Sumsub      SumsubConfig
 	Didit       DiditConfig
-	KYCProvider string // "didit" (default) | "sumsub" | "metamap"
+	KYCProvider string // "didit" (default) | "sumsub" | "metamap" | "manual" (staff review, no vendor)
 	Google      GoogleConfig
 	Nilos       NilosConfig
 	Nomba       NombaConfig
@@ -74,6 +74,20 @@ type ServerConfig struct {
 	// redeploy needed): set MAINTENANCE_MODE=true to turn on, false to turn off.
 	MaintenanceMode    bool
 	MaintenanceMessage string
+
+	// CORSAllowedOrigins lists the browser origins allowed to call the API
+	// directly (CORS_ALLOWED_ORIGINS, comma-separated). Empty = no cross-origin
+	// access at all: the web app reaches the API server-side via its Next.js
+	// proxy, so browsers never need CORS. "*" is refused.
+	CORSAllowedOrigins []string
+	// SwaggerEnabled exposes /swagger/* (SWAGGER_ENABLED). Defaults to true
+	// outside production and false in production.
+	SwaggerEnabled bool
+	// TrustedProxyHops is how many proxies append to X-Forwarded-For in front of
+	// the API (TRUSTED_PROXY_HOPS). The client IP is the entry that many places
+	// from the right; anything further left is client-supplied and ignored.
+	// Default 2 = Next.js proxy + Cloud Run front end. 0 ignores the header.
+	TrustedProxyHops int
 }
 
 type DatabaseConfig struct {
@@ -136,6 +150,11 @@ type BrevoConfig struct {
 	SMTPKey       string // Brevo SMTP API key
 	APIKey        string // Brevo REST API key (v3) — used for transactional SMS
 	SMSSenderName string // Alphanumeric sender ID shown on SMS recipient's phone (max 11 chars)
+	// SMSUnsupportedCallingCodes lists country calling codes (e.g. "1", "91")
+	// for which SMS is known not to be delivered: such numbers are refused
+	// up front with an explicit error instead of a code that never arrives.
+	// Env: SMS_UNSUPPORTED_CALLING_CODES (comma-separated, "+" optional).
+	SMSUnsupportedCallingCodes []string
 }
 
 // MetaMapConfig holds credentials for MetaMap identity verification.
@@ -212,6 +231,13 @@ func Load() (*Config, error) {
 	cfg.Server.Env = getEnv("ENV", "development")
 	cfg.Server.Debug = getEnv("DEBUG", "false") == "true"
 	cfg.Server.MaintenanceMode = getEnv("MAINTENANCE_MODE", "false") == "true"
+	for _, o := range strings.Split(getEnv("CORS_ALLOWED_ORIGINS", ""), ",") {
+		if o = strings.TrimSpace(o); o != "" && o != "*" {
+			cfg.Server.CORSAllowedOrigins = append(cfg.Server.CORSAllowedOrigins, o)
+		}
+	}
+	cfg.Server.SwaggerEnabled = getEnv("SWAGGER_ENABLED", fmt.Sprint(cfg.Server.Env != "production")) == "true"
+	cfg.Server.TrustedProxyHops = getEnvInt("TRUSTED_PROXY_HOPS", 2)
 	cfg.Server.MaintenanceMessage = getEnv("MAINTENANCE_MESSAGE", "The service is currently undergoing scheduled maintenance. Please check back later.")
 
 	cfg.Database.URL = require("DATABASE_URL")
@@ -251,6 +277,12 @@ func Load() (*Config, error) {
 	cfg.Brevo.SMTPKey = getEnv("BREVO_SMTP_KEY", "")
 	cfg.Brevo.APIKey = getEnv("BREVO_API_KEY", "")                    // REST v3 key for transactional SMS
 	cfg.Brevo.SMSSenderName = getEnv("BREVO_SMS_SENDER", "DigitalFX") // max 11 chars
+	for _, cc := range splitCSV(getEnv("SMS_UNSUPPORTED_CALLING_CODES", "")) {
+		cc = strings.TrimPrefix(strings.TrimPrefix(cc, "+"), "00")
+		if cc != "" {
+			cfg.Brevo.SMSUnsupportedCallingCodes = append(cfg.Brevo.SMSUnsupportedCallingCodes, cc)
+		}
+	}
 
 	cfg.MetaMap.ClientID = getEnv("METAMAP_CLIENT_ID", "")
 	cfg.MetaMap.ClientSecret = getEnv("METAMAP_CLIENT_SECRET", "")
@@ -308,6 +340,12 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// KYCManualMode reports whether KYC runs without a vendor (KYC_PROVIDER=manual):
+// customers upload their ID + a selfie holding it and staff approve/reject.
+func (c *Config) KYCManualMode() bool {
+	return strings.EqualFold(strings.TrimSpace(c.KYCProvider), "manual")
 }
 
 func getEnv(key, fallback string) string {

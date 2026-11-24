@@ -37,7 +37,10 @@ func NewAuthHandler(svc *services.Services, cfg *config.Config) *AuthHandler {
 //	@Param        body  body      SendOTPRequest  true  "Phone number (E.164)"
 //	@Success      200   {object}  MessageResponse
 //	@Failure      400   {object}  ErrorResponse
+//	@Failure      422   {object}  ErrorResponse  "SMS_DESTINATION_UNSUPPORTED — this number/country cannot receive SMS (data.reason, data.calling_code)"
+//	@Failure      429   {object}  ErrorResponse
 //	@Failure      500   {object}  ErrorResponse
+//	@Failure      503   {object}  ErrorResponse  "SMS_UNAVAILABLE — SMS provider temporarily unavailable"
 //	@Router       /auth/otp/send [post]
 func (h *AuthHandler) SendOTP(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -48,6 +51,13 @@ func (h *AuthHandler) SendOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.Auth.SendOTP(r.Context(), body.Phone); err != nil {
+		if errors.Is(err, services.ErrTooManyAttempts) {
+			response.TooManyRequests(w, "too many codes requested — please try again later")
+			return
+		}
+		if writeSMSError(w, err) {
+			return
+		}
 		response.InternalError(w)
 		return
 	}
@@ -62,8 +72,9 @@ func (h *AuthHandler) SendOTP(w http.ResponseWriter, r *http.Request) {
 //	@Accept       json
 //	@Produce      json
 //	@Param        body  body      VerifyOTPRequest  true  "Phone + OTP code"
-//	@Success      200   {object}  MessageResponse
+//	@Success      200   {object}  VerifyOTPResponse  "data.verification_token must be sent as phone_verification_token to POST /auth/register"
 //	@Failure      400   {object}  ErrorResponse
+//	@Failure      429   {object}  ErrorResponse
 //	@Router       /auth/otp/verify [post]
 func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -74,11 +85,38 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, "VALIDATION_ERROR", "invalid request body")
 		return
 	}
-	if err := h.svc.Auth.VerifyOTP(r.Context(), body.Phone, body.Code); err != nil {
-		response.BadRequest(w, "INVALID_OTP", "invalid or expired OTP")
+	verificationToken, err := h.svc.Auth.VerifyOTP(r.Context(), body.Phone, body.Code)
+	if err != nil {
+		if errors.Is(err, services.ErrTooManyAttempts) {
+			response.TooManyRequests(w, "too many attempts — please wait 15 minutes and try again")
+			return
+		}
+		if errors.Is(err, services.ErrInvalidOTP) {
+			response.BadRequest(w, "INVALID_OTP", "invalid or expired OTP")
+			return
+		}
+		response.InternalError(w)
 		return
 	}
-	response.OKWithMessage(w, "OTP verified", nil)
+	response.OKWithMessage(w, "OTP verified", VerifyOTPData{
+		VerificationToken: verificationToken,
+		ExpiresIn:         int64(services.PhoneVerificationTTL.Seconds()),
+	})
+}
+
+// VerifyOTPData is the data returned by POST /auth/otp/verify.
+type VerifyOTPData struct {
+	// VerificationToken proves the phone was verified; send it as
+	// phone_verification_token to POST /auth/register.
+	VerificationToken string `json:"verification_token"`
+	ExpiresIn         int64  `json:"expires_in" example:"3600"` // seconds
+}
+
+// VerifyOTPResponse documents the POST /auth/otp/verify envelope.
+type VerifyOTPResponse struct {
+	Success bool          `json:"success" example:"true"`
+	Message string        `json:"message" example:"OTP verified"`
+	Data    VerifyOTPData `json:"data"`
 }
 
 // ─── Register ─────────────────────────────────────────────────────────────────
@@ -86,13 +124,13 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 // Register godoc
 //
 //	@Summary      Register
-//	@Description  Creates a new user account (individual or business), provisions fiat accounts, and returns a JWT pair. Set account_type to "individual" or "business". Business accounts require company-level fields; director info and documents are submitted post-signup via /business/* endpoints. BVN is NOT collected at signup — it is an optional field in the KYC intake (GET /kyc/requirements → POST /kyc/intake) and is what activates the Nigerian (NGN) account.
+//	@Description  Creates a new user account (individual or business), provisions fiat accounts, and returns a JWT pair. Set account_type to "individual" or "business". Business accounts require company-level fields; director info and documents are submitted post-signup via /business/* endpoints. BVN is NOT collected at signup — it is an optional field in the KYC intake (GET /kyc/requirements → POST /kyc/intake) and is what activates the Nigerian (NGN) account. REQUIRES `phone_verification_token` (from POST /auth/otp/verify for the same phone, valid 60 min); otherwise 400 PHONE_NOT_VERIFIED.
 //	@Tags         auth
 //	@Accept       json
 //	@Produce      json
 //	@Param        body  body      RegisterRequest   true  "New user details"
 //	@Success      201   {object}  TokenPairResponse
-//	@Failure      400   {object}  ErrorResponse
+//	@Failure      400   {object}  ErrorResponse  "VALIDATION_ERROR / PHONE_NOT_VERIFIED"
 //	@Failure      409   {object}  ErrorResponse  "Phone already registered"
 //	@Failure      500   {object}  ErrorResponse
 //	@Router       /auth/register [post]
@@ -110,15 +148,16 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := services.RegisterInput{
-		AccountType: body.AccountType,
-		Phone:       body.Phone,
-		Email:       body.Email,
-		FirstName:   body.FirstName,
-		LastName:    body.LastName,
-		PIN:         body.PIN,
-		Country:     body.Country,
-		DeviceIP:    realIP(r),
-		DeviceUA:    r.UserAgent(),
+		AccountType:            body.AccountType,
+		Phone:                  body.Phone,
+		Email:                  body.Email,
+		FirstName:              body.FirstName,
+		LastName:               body.LastName,
+		PIN:                    body.PIN,
+		Country:                body.Country,
+		PhoneVerificationToken: body.PhoneVerificationToken,
+		DeviceIP:               realIP(r),
+		DeviceUA:               r.UserAgent(),
 	}
 
 	// For business accounts, validate and attach company fields.
@@ -138,6 +177,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pair, err := h.svc.Auth.Register(r.Context(), in)
+	if errors.Is(err, services.ErrPhoneNotVerified) {
+		response.BadRequest(w, "PHONE_NOT_VERIFIED", err.Error())
+		return
+	}
 	if errors.Is(err, services.ErrUserExists) {
 		response.Conflict(w, "USER_EXISTS", "a user with this phone number already exists")
 		return
@@ -185,6 +228,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		DeviceUA: r.UserAgent(),
 	})
 	switch {
+	case errors.Is(err, services.ErrTooManyAttempts):
+		response.TooManyRequests(w, "too many attempts — please wait 15 minutes and try again")
 	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, services.ErrInvalidPIN):
 		response.Unauthorized(w, "invalid credentials")
 	case errors.Is(err, services.ErrAccountInactive):
@@ -231,6 +276,10 @@ func (h *AuthHandler) CompleteTOTPLogin(w http.ResponseWriter, r *http.Request) 
 	}
 	pair, err := h.svc.Auth.CompleteTOTPLogin(r.Context(), body.Ref, body.Code, realIP(r), r.UserAgent())
 	if err != nil {
+		if errors.Is(err, services.ErrTooManyAttempts) {
+			response.TooManyRequests(w, "too many attempts — please wait 15 minutes and try again")
+			return
+		}
 		response.Unauthorized(w, "invalid or expired 2FA code")
 		return
 	}
@@ -366,14 +415,14 @@ func (h *AuthHandler) GoogleSignIn(w http.ResponseWriter, r *http.Request) {
 // ForgotPIN godoc
 //
 //	@Summary      Forgot PIN
-//	@Description  Sends a 6-digit reset code to the registered email or phone. Returns 404 if the account does not exist.
+//	@Description  Sends a 6-digit reset code to the registered email or phone. Always returns the same 200 response whether or not the account exists (no account enumeration). Max 5 codes per hour per account (429).
 //	@Tags         auth
 //	@Accept       json
 //	@Produce      json
 //	@Param        body  body      ForgotPINRequest  true  "Email or phone"
 //	@Success      200   {object}  MessageResponse
 //	@Failure      400   {object}  ErrorResponse
-//	@Failure      404   {object}  ErrorResponse
+//	@Failure      429   {object}  ErrorResponse
 //	@Router       /auth/forgot-pin [post]
 func (h *AuthHandler) ForgotPIN(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -384,13 +433,18 @@ func (h *AuthHandler) ForgotPIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := h.svc.Auth.ForgotPIN(r.Context(), body.EmailOrPhone)
+	if err != nil && writeSMSError(w, err) {
+		return
+	}
 	switch {
-	case errors.Is(err, services.ErrUserNotFound):
-		response.NotFound(w, "account not found; please create an account first")
-	case err != nil:
+	case errors.Is(err, services.ErrTooManyAttempts):
+		response.TooManyRequests(w, "too many codes requested — please try again later")
+	case err != nil && !errors.Is(err, services.ErrUserNotFound):
 		response.InternalError(w)
 	default:
-		response.OKWithMessage(w, "a reset code has been sent to your registered contact", nil)
+		// SECURITY (enumeration): the answer is identical whether or not an
+		// account exists for this email/phone.
+		response.OKWithMessage(w, "if an account exists for this email or phone, a reset code has been sent to it", nil)
 	}
 }
 
@@ -426,10 +480,11 @@ func (h *AuthHandler) ResetPIN(w http.ResponseWriter, r *http.Request) {
 		DeviceUA:     r.UserAgent(),
 	})
 	switch {
-	case errors.Is(err, services.ErrInvalidOTP):
+	case errors.Is(err, services.ErrTooManyAttempts):
+		response.TooManyRequests(w, "too many attempts — please wait 15 minutes and try again")
+	case errors.Is(err, services.ErrInvalidOTP), errors.Is(err, services.ErrUserNotFound):
+		// SECURITY (enumeration): an unknown account looks like a wrong code.
 		response.BadRequest(w, "INVALID_OTP", "invalid or expired reset code")
-	case errors.Is(err, services.ErrUserNotFound):
-		response.BadRequest(w, "NOT_FOUND", "account not found")
 	case err != nil:
 		response.InternalError(w)
 	default:
@@ -530,6 +585,10 @@ func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.Auth.VerifyEmail(r.Context(), userID, body.Code); err != nil {
+		if errors.Is(err, services.ErrTooManyAttempts) {
+			response.TooManyRequests(w, "too many attempts — please wait 15 minutes and try again")
+			return
+		}
 		if errors.Is(err, services.ErrInvalidOTP) {
 			response.BadRequest(w, "INVALID_OTP", "invalid or expired verification code")
 			return
@@ -640,13 +699,42 @@ func (h *AuthHandler) DisconnectAllDevices(w http.ResponseWriter, r *http.Reques
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// writeSMSError answers explicitly when an SMS could not be sent, and reports
+// whether it handled err:
+//   - 422 SMS_DESTINATION_UNSUPPORTED — this number / country cannot receive SMS
+//     (data.reason: country_not_supported | number_rejected, data.calling_code)
+//   - 503 SMS_UNAVAILABLE — provider temporarily unavailable, retry later
+func writeSMSError(w http.ResponseWriter, err error) bool {
+	var dest *services.SMSDestinationError
+	switch {
+	case errors.As(err, &dest):
+		msg := "we cannot send an SMS to this phone number — check the number, or contact support if it is correct"
+		data := map[string]string{"reason": dest.Reason}
+		if dest.Reason == services.SMSReasonCountryUnsupported {
+			msg = "SMS verification is not available for phone numbers from this country (+" + dest.CallingCode + ") — contact support to open your account"
+			data["calling_code"] = dest.CallingCode
+		}
+		response.JSON(w, http.StatusUnprocessableEntity, response.Envelope{
+			Success: false,
+			Error:   &response.Error{Code: "SMS_DESTINATION_UNSUPPORTED", Message: msg},
+			Data:    data,
+		})
+		return true
+	case errors.Is(err, services.ErrSMSDelivery):
+		response.JSON(w, http.StatusServiceUnavailable, response.Envelope{
+			Success: false,
+			Error:   &response.Error{Code: "SMS_UNAVAILABLE", Message: "the SMS service is temporarily unavailable — please try again in a few minutes"},
+		})
+		return true
+	}
+	return false
+}
+
+// realIP returns the client IP resolved by middleware.ClientIP (trusted end
+// of X-Forwarded-For). SECURITY: never read X-Forwarded-For / X-Real-IP here —
+// the left-most values are client-controlled and would let anyone spoof the IP
+// shown in device lists and login alerts.
 func realIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		return ip
-	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
 	return r.RemoteAddr
 }
 

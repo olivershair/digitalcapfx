@@ -1,9 +1,13 @@
 import { BaseService } from './base.service';
 
 export interface DocumentUploadRequest {
-  doc_type: 'national_id' | 'passport' | 'selfie' | 'proof_of_address';
+  /** Document key from GET /kyc/requirements (e.g. id_document, selfie_with_id). */
+  doc_type: string;
   doc_url: string;
 }
+
+/** provider = vendor SDK (Didit…); manual = ID + selfie uploads reviewed by staff. */
+export type VerificationMode = 'provider' | 'manual';
 
 export type KycStatus = 'pending' | 'submitted' | 'under_review' | 'processing' | 'approved' | 'rejected' | 'idle';
 
@@ -31,6 +35,8 @@ export interface KycIdentityStatus {
 }
 
 export interface KycStatusResponseData {
+  verificationMode?: VerificationMode;
+  verification_mode?: VerificationMode;
   status?: KycStatus;
   kycStatus?: KycStatus;
   kyc_status?: KycStatus;
@@ -92,6 +98,8 @@ export interface DocumentSpec {
 export interface IntakeRequirementsResponse {
   accountType?: 'business' | 'individual' | string;
   account_type?: 'business' | 'individual' | string;
+  verificationMode?: VerificationMode;
+  verification_mode?: VerificationMode;
   intakeStatus?: 'not_started' | 'draft' | 'submitted' | string;
   intake_status?: 'not_started' | 'draft' | 'submitted' | string;
   completed?: boolean;

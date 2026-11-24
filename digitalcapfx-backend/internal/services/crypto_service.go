@@ -13,6 +13,7 @@ import (
 	"github.com/rachfinance/digitalfx/internal/clients/caas"
 	"github.com/rachfinance/digitalfx/internal/clients/hub2"
 	db "github.com/rachfinance/digitalfx/internal/db/sqlc"
+	"github.com/rachfinance/digitalfx/internal/pkg/redact"
 )
 
 var (
@@ -648,7 +649,7 @@ func (s *CaaSService) Withdraw(ctx context.Context, in WithdrawCryptoInput) (*db
 
 	s.logger.Info("caas withdrawal initiated",
 		zap.String("withdrawal_id", resp.WithdrawalID),
-		zap.String("phone", in.Phone),
+		zap.String("phone", redact.Phone(in.Phone)),
 		zap.String("amount", in.Amount),
 		zap.String("token", string(in.Token)),
 	)

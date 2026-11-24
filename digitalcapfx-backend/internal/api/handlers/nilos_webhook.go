@@ -42,7 +42,11 @@ func (h *NilosWebhookHandler) Receive(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.svc.Nilos.HandleWebhook(r.Context(), body, r.Header); err != nil {
 		if errors.Is(err, services.ErrNilosWebhookSignature) {
-			response.Unauthorized(w, "invalid webhook signature")
+			response.WebhookSignatureInvalid(w, "nilos", "X-Signature (or provider equivalent)", "NILOS_WEBHOOK_SECRET")
+			return
+		}
+		if errors.Is(err, services.ErrWebhookNotConfigured) {
+			response.WebhookSecretMissing(w, "nilos", "NILOS_WEBHOOK_SECRET")
 			return
 		}
 		h.logger.Error("nilos webhook processing error", zap.Error(err))

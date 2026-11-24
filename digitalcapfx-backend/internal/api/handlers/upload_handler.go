@@ -81,7 +81,7 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 // GetReadURL godoc
 //
 //	@Summary      Get a signed read URL
-//	@Description  Returns a fresh time-limited URL to download a previously uploaded object.
+//	@Description  Returns a fresh time-limited URL to download a previously uploaded object. Only objects uploaded by the caller are accessible; any other object returns 404.
 //	@Tags         uploads
 //	@Produce      json
 //	@Security     BearerAuth
@@ -89,9 +89,11 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 //	@Param        ttl     query     int     false  "Lifetime in seconds (default 604800)"
 //	@Success      200  {object}  map[string]string
 //	@Failure      400  {object}  ErrorResponse
+//	@Failure      404  {object}  ErrorResponse
 //	@Router       /uploads/read-url [get]
 func (h *UploadHandler) GetReadURL(w http.ResponseWriter, r *http.Request) {
-	if _, ok := middleware.UserIDFromContext(r.Context()); !ok {
+	userID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
 		response.Unauthorized(w, "unauthorized")
 		return
 	}
@@ -106,8 +108,13 @@ func (h *UploadHandler) GetReadURL(w http.ResponseWriter, r *http.Request) {
 			ttl = time.Duration(secs) * time.Second
 		}
 	}
-	url, err := h.svc.Upload.ReadURL(object, ttl)
+	// SECURITY: only the owner of an object may get a URL for it (IDOR fix).
+	url, err := h.svc.Upload.ReadURLForUser(userID, object, ttl)
 	if err != nil {
+		if errors.Is(err, services.ErrUploadForbidden) {
+			response.NotFound(w, "object not found")
+			return
+		}
 		if errors.Is(err, services.ErrUploadsDisabled) {
 			response.ServiceUnavailable(w, "uploads are not available on this environment")
 			return

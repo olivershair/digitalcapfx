@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { cn } from '@/lib/utils'
 import { useLanguageStore } from '@/store/languageStore'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 export const TeamsPage: React.FC = () => {
   const { t } = useLanguageStore();
@@ -53,17 +54,17 @@ export const TeamsPage: React.FC = () => {
       teamService.inviteTeamMember(payload.email, payload.role),
     onSuccess: (res) => {
       if (res?.success) {
-        toast.success(`Invitation successfully dispatched to ${inviteEmail}!`);
+        toast.success(t('messages.team.invited', { email: inviteEmail }));
         setIsInviteOpen(false);
         setInviteEmail('');
         setInviteRole('viewer');
         queryClient.invalidateQueries({ queryKey: ['teamMembers'] });
       } else {
-        toast.error(res?.error?.message || 'Failed to dispatch invitation.');
+        toast.error(apiErrorMessage(res, 'errors.action.invite'));
       }
     },
     onError: (err: any) => {
-      toast.error(err.response?.data?.error?.message || 'Failed to invite team member.');
+      toast.error(apiErrorMessage(err, 'errors.action.invite'));
     }
   });
 
@@ -71,14 +72,14 @@ export const TeamsPage: React.FC = () => {
     mutationFn: (id: string) => teamService.removeTeamMember(id),
     onSuccess: (res) => {
       if (res?.success) {
-        toast.success('Team member revoked successfully.');
+        toast.success(t('messages.team.removed'));
         queryClient.invalidateQueries({ queryKey: ['teamMembers'] });
       } else {
-        toast.error(res?.error?.message || 'Failed to remove member.');
+        toast.error(apiErrorMessage(res, 'errors.action.removeMember'));
       }
     },
     onError: (err: any) => {
-      toast.error(err.response?.data?.error?.message || 'Failed to remove team member.');
+      toast.error(apiErrorMessage(err, 'errors.action.removeMember'));
     }
   });
 
@@ -87,14 +88,14 @@ export const TeamsPage: React.FC = () => {
       teamService.updateMemberRole(payload.id, payload.role),
     onSuccess: (res) => {
       if (res?.success) {
-        toast.success('Colleague role authorization level adjusted.');
+        toast.success(t('messages.team.roleUpdated'));
         queryClient.invalidateQueries({ queryKey: ['teamMembers'] });
       } else {
-        toast.error(res?.error?.message || 'Failed to adjust role.');
+        toast.error(apiErrorMessage(res, 'errors.action.updateRole'));
       }
     },
     onError: (err: any) => {
-      toast.error(err.response?.data?.error?.message || 'Failed to update colleague role.');
+      toast.error(apiErrorMessage(err, 'errors.action.updateRole'));
     }
   });
 
@@ -102,7 +103,7 @@ export const TeamsPage: React.FC = () => {
     const inviteLink = `${window.location.origin}/accept-invite?token=${token}`;
     navigator.clipboard.writeText(inviteLink);
     setCopiedId(id);
-    toast.success('Invitation activation link copied!');
+    toast.success(t('messages.team.linkCopied'));
     setTimeout(() => setCopiedId(null), 2000);
   };
 

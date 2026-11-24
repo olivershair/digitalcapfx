@@ -21,17 +21,27 @@ func newRouter(cfg *config.Config, svc *services.Services, pool *pgxpool.Pool, l
 	r := chi.NewRouter()
 
 	// Global middleware
-	r.Use(chimiddleware.RealIP)
+	// SECURITY: client IP from the trusted end of X-Forwarded-For only (chi's
+	// RealIP trusted the client-controlled left-most entry).
+	r.Use(middleware.ClientIP(cfg.Server.TrustedProxyHops))
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(middleware.Logger(logger))
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}))
+	r.Use(middleware.SecurityHeaders)
+	// SECURITY: CORS only for explicitly listed origins (never "*" with
+	// credentials). The web app calls the API server-side through its Next.js
+	// proxy, so by default no cross-origin browser access is granted at all.
+	// NB: go-chi/cors treats an EMPTY list as "*", so the middleware is only
+	// mounted when origins are configured.
+	if len(cfg.Server.CORSAllowedOrigins) > 0 {
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   cfg.Server.CORSAllowedOrigins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
+			AllowCredentials: true,
+			MaxAge:           300,
+		}))
+	}
 
 	// Handlers
 	authH := handlers.NewAuthHandler(svc, cfg)
@@ -76,6 +86,25 @@ func newRouter(cfg *config.Config, svc *services.Services, pool *pgxpool.Pool, l
 	momoH := handlers.NewMomoHandler(svc)
 	adminMomoH := handlers.NewAdminMomoHandler(svc)
 
+	// SECURITY: these webhooks credit balances and fail closed (503) while
+	// their secret is unset. Surface it loudly at boot rather than silently
+	// dropping deposits.
+	for name, secret := range map[string]string{
+		"PAYMENTS_WEBHOOK_SECRET": cfg.PaymentsAPI.WebhookSecret,
+		"CAAS_WEBHOOK_SECRET":     cfg.CaaS.WebhookSecret,
+		"NOMBA_WEBHOOK_SECRET":    cfg.Nomba.WebhookSecret,
+		"NILOS_WEBHOOK_SECRET":    cfg.Nilos.WebhookSecret,
+	} {
+		if secret == "" {
+			logger.Error("webhook secret not set — the matching webhook will reject every delivery (503)",
+				zap.String("env", name))
+		}
+	}
+	if cfg.KYCProvider == "metamap" && cfg.MetaMap.WebhookSecret == "" {
+		logger.Error("webhook secret not set — the metamap webhook will reject every delivery (503)",
+			zap.String("env", "METAMAP_WEBHOOK_SECRET"))
+	}
+
 	kycRequired := middleware.KYCRequired(pool)
 
 	// Health
@@ -114,10 +143,13 @@ func newRouter(cfg *config.Config, svc *services.Services, pool *pgxpool.Pool, l
 	r.Post("/api/v1/webhooks/kyc", kycH.ProviderWebhook)
 	r.Post("/api/v1/webhooks/didit", kycH.ProviderWebhook)
 
-	// Swagger UI
-	r.Get("/swagger/*", httpSwagger.Handler(
-		httpSwagger.URL("/swagger/doc.json"),
-	))
+	// Swagger UI — SECURITY: off in production unless SWAGGER_ENABLED=true,
+	// so the full API map is not published.
+	if cfg.Server.SwaggerEnabled {
+		r.Get("/swagger/*", httpSwagger.Handler(
+			httpSwagger.URL("/swagger/doc.json"),
+		))
+	}
 
 	// API v1
 	r.Route("/api/v1", func(r chi.Router) {
@@ -148,6 +180,7 @@ func newRouter(cfg *config.Config, svc *services.Services, pool *pgxpool.Pool, l
 		// ─── Protected routes (JWT required) ──────────────────────────────────
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Auth(cfg.JWT.Secret))
+			r.Use(middleware.ActiveSession(pool))
 
 			// Auth — session & email management
 			r.Post("/auth/logout", authH.Logout)
@@ -259,7 +292,7 @@ func newRouter(cfg *config.Config, svc *services.Services, pool *pgxpool.Pool, l
 					r.Get("/transactions", walletH.GetWaasTransactions) // on-chain history
 					r.Post("/transfer", walletH.TransferCrypto)         // send on-chain
 					r.Post("/estimate-gas", walletH.EstimateGas)
-					r.Get("/seed", walletH.RevealSeed)              // sensitive
+					r.Post("/seed", walletH.RevealSeed)             // sensitive — PIN (+2FA) step-up
 					r.Post("/export-key", walletH.ExportPrivateKey) // sensitive
 					r.Post("/deposit", walletH.InitiateDeposit)     // HUB2 mobile money
 					r.Post("/withdraw", walletH.InitiateWithdrawal) // HUB2 mobile money

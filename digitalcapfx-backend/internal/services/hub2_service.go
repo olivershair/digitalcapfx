@@ -31,6 +31,7 @@ import (
 	"github.com/rachfinance/digitalfx/internal/clients/caas"
 	"github.com/rachfinance/digitalfx/internal/clients/hub2"
 	db "github.com/rachfinance/digitalfx/internal/db/sqlc"
+	"github.com/rachfinance/digitalfx/internal/pkg/redact"
 )
 
 type HUB2Service struct {
@@ -176,7 +177,7 @@ func (s *HUB2Service) HandleWebhook(ctx context.Context, payload hub2.WebhookPay
 	} else {
 		s.logger.Info("caas notified — awaiting XOF bank transfer confirmation",
 			zap.String("reference", payload.Reference),
-			zap.String("phone", phone),
+			zap.String("phone", redact.Phone(phone)),
 			zap.String("usdc_owed", quote.ExpectedOut),
 			zap.String("caas_status", fundResp.Status),
 		)
@@ -218,7 +219,7 @@ func (s *HUB2Service) HandleWebhook(ctx context.Context, payload hub2.WebhookPay
 
 	s.logger.Info("hub2 collection processed — CaaS notified, awaiting fiat settlement",
 		zap.String("reference", payload.Reference),
-		zap.String("phone", phone),
+		zap.String("phone", redact.Phone(phone)),
 		zap.String("usdc_owed", quote.ExpectedOut),
 	)
 

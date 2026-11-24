@@ -11,6 +11,7 @@ import { getCountries, isValidPhoneNumber } from 'react-phone-number-input'
 import { PhoneInput } from '@/components/ui/PhoneInput'
 import en from 'react-phone-number-input/locale/en.json'
 import { useLanguageStore } from '@/store/languageStore'
+import { apiErrorMessage } from '@/lib/apiErrors'
 
 const enLabels = en as Record<string, string>;
 const COUNTRY_OPTIONS: SelectOption[] = getCountries()
@@ -73,12 +74,11 @@ export const ProfileTab: React.FC = () => {
                 toast.success(t('settings.profile.toast.success'));
                 queryClient.invalidateQueries({ queryKey: ['profile'] });
             } else {
-                toast.error(data?.error?.message || t('settings.profile.toast.failed'));
+                toast.error(apiErrorMessage(data, 'settings.profile.toast.failed'));
             }
         },
         onError: (err: any) => {
-            const rawError = err.response?.data?.error;
-            const msg = typeof rawError === 'object' ? rawError.message : (rawError || t('settings.profile.toast.error'));
+            const msg = apiErrorMessage(err, 'settings.profile.toast.error');
             toast.error(msg);
         }
     });
